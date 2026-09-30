@@ -35,6 +35,12 @@ Operational audit history lives in the audit SQL Database
 | connection_reference | Logical name, resolved per environment in `source_connection` |
 
 ### `control.source_connection`
+
+Environment-owned: seed scripts only insert missing rows, and never update or delete them.
+Operators set `fabric_connection_id`, `gateway_name` and `database_name` per environment
+([RB-02](../runbooks/02_metadata_maintenance.md) § Environment connection values).
+Only `database_name` is used at run time (it is passed to the copy as `source_database`);
+the copy's connection itself is the one bound in the extract pipeline.
 Per-environment connection **references**. No credential is ever stored.
 | Column | Meaning |
 |---|---|

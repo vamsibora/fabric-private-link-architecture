@@ -64,8 +64,18 @@ group), or replay if the entity is landing-enabled. A retry of the same
        updated_datetime = SYSUTCDATETIME()
    WHERE entity_id = <id>;
    ```
-3. Run the entity. MERGE and HISTORY are idempotent, so existing Bronze rows
-   are not duplicated.
+3. Run the entity. What happens to existing Bronze rows depends on the write
+   strategy (`control.entity`):
+   - **MERGE / REPLACE:** idempotent; nothing is duplicated.
+   - **HISTORY:** versions at or before the current Bronze version are
+     skipped by the temporal filter, so nothing is duplicated. Older source
+     versions are *not* back-filled.
+   - **APPEND:** **rows are duplicated.** APPEND is only idempotent within one
+     entity run. Before resetting, truncate the Bronze table or delete the
+     affected range, and record that in the change ticket.
+
+See [runbooks/03_operations_procedures.md](../runbooks/03_operations_procedures.md)
+for the full procedure.
 
 Never run this against PROD without explicit approval.
 

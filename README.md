@@ -29,7 +29,7 @@ notebooks/framework/ Connection helpers and the ledger-driven migration runner (
 fabric_items/       Dev git-sync root: pipelines, notebooks, environment (.platform included)
 scripts/ci/         Fabric REST helpers used by CI (git sync, library publish, job run, stage deploy, verify)
 tests/              pytest (Fabric dependencies mocked; Spark tests skip without Java)
-docs/               Spec, framework docs, CI/CD, runbook, AI-agent build prompts
+docs/               Spec, framework docs, runbooks (docs/runbooks/), CI/CD, AI-agent build prompts
 ```
 
 ## Quick start (local)

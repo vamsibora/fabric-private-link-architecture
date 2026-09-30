@@ -1,0 +1,75 @@
+-- TEMPLATE -- copy to warehouse/metadata/<entity_id>_entity_<source>_<table>.sql
+-- (the .sql.template extension keeps migration_runner from ever applying this file).
+-- Procedure: docs/runbooks/02_metadata_maintenance.md -> "Add an entity".
+--
+-- Replace every <...> placeholder. Id conventions (warehouse/metadata/README.md):
+--   entity_id              <EID>                      next free id, never reuse a retired one
+--   entity_column_id       <EID>*100 + ordinal        e.g. 10501, 10502 ...
+--   load_configuration_id  <EID>
+--   validation_rule_id     <EID>*10 + n               (n = 1..9)
+--   column_mapping_id      <EID>*100 + n
+--
+-- Write strategy is DERIVED (control.entity comment):
+--   history_required = 1 -> HISTORY | merge_required = 1 -> MERGE
+--   load_type FULL (neither) -> REPLACE | otherwise -> APPEND
+-- target_data_type is a Spark SQL type: STRING, INT, BIGINT, DECIMAL(p,s), TIMESTAMP, DATE, BOOLEAN ...
+BEGIN TRANSACTION;
+
+DELETE FROM [control].[column_mapping]     WHERE entity_id = <EID>;
+DELETE FROM [control].[validation_rule]    WHERE entity_id = <EID>;
+DELETE FROM [control].[load_configuration] WHERE entity_id = <EID>;
+DELETE FROM [control].[entity_column]      WHERE entity_id = <EID>;
+DELETE FROM [control].[entity]             WHERE entity_id = <EID>;
+
+INSERT INTO [control].[entity]
+    (entity_id, source_system_id, source_schema, source_table, target_schema, target_table,
+     staging_schema, staging_table, entity_group, load_type, landing_enabled, history_required,
+     merge_required, primary_key, watermark_column, watermark_type, change_detection_method,
+     anonymisation_required, processing_priority, active_flag, created_datetime, created_by)
+VALUES
+    (<EID>, <SOURCE_SYSTEM_ID>, '<source_schema>', '<SourceTable>', '<bronze_schema>', '<target_table>',
+     'staging', '<source>_<target_table>', '<entity_group>', '<FULL|INCREMENTAL>', <0|1>, <0|1>,
+     <0|1>, '<Key1[,Key2]>', '<WatermarkColumn or NULL>', '<DATETIME|NUMERIC|STRING or NULL>', 'HASH',
+     <0|1>, <priority>, 1, SYSUTCDATETIME(), '<your UPN or ticket>');
+
+INSERT INTO [control].[entity_column]
+    (entity_column_id, entity_id, source_column, target_column, ordinal_position, source_data_type,
+     target_data_type, nullable_flag, primary_key_flag, watermark_flag, hash_flag, anonymisation_flag,
+     anonymisation_rule_id, active_flag, created_datetime, created_by)
+VALUES
+    -- key column: primary_key_flag = 1, hash_flag = 0
+    (<EID>01, <EID>, '<KeyColumn>',       '<KeyColumn>',       1, '<int>',       'INT',       0, 1, 0, 0, 0, NULL, 1, SYSUTCDATETIME(), '<you>'),
+    -- business column: hash_flag = 1 (a change to it is a change to the record)
+    (<EID>02, <EID>, '<BusinessColumn>',  '<BusinessColumn>',  2, '<nvarchar>',  'STRING',    1, 0, 0, 1, 0, NULL, 1, SYSUTCDATETIME(), '<you>'),
+    -- sensitive column: anonymisation_flag = 1 + a rule from control.anonymisation_rule
+    (<EID>03, <EID>, '<SensitiveColumn>', '<SensitiveColumn>', 3, '<nvarchar>',  'STRING',    1, 0, 0, 1, 1, <RULE_ID>, 1, SYSUTCDATETIME(), '<you>'),
+    -- watermark column: watermark_flag = 1, hash_flag = 0
+    (<EID>04, <EID>, '<ModifiedDate>',    '<ModifiedDate>',    4, '<datetime2>', 'TIMESTAMP', 0, 0, 1, 0, 0, NULL, 1, SYSUTCDATETIME(), '<you>');
+
+INSERT INTO [control].[load_configuration]
+    (load_configuration_id, entity_id, retry_enabled, max_retry_count, retry_delay_seconds,
+     source_query_override, source_filter, delete_detection_enabled, row_count_anomaly_threshold_pct,
+     active_flag, created_datetime, created_by)
+VALUES
+    (<EID>, <EID>, 1, 3, 30, NULL, NULL, 0, NULL, 1, SYSUTCDATETIME(), '<you>');
+
+-- Optional: extra validation rules (built-ins PRIMARY_KEY_NULL, DUPLICATE_PRIMARY_KEY,
+-- COLUMN_MISSING and DATA_TYPE_MISMATCH are applied automatically).
+INSERT INTO [control].[validation_rule]
+    (validation_rule_id, entity_id, rule_name, rule_type, column_name, expression, severity,
+     failure_action, validation_stage, active_flag, created_datetime, created_by)
+VALUES
+    (<EID>1, <EID>, '<table>_<column>_mandatory', 'MANDATORY_COLUMN_NULL', '<BusinessColumn>', NULL, 'HIGH', 'FAIL', 'PRE', 1, SYSUTCDATETIME(), '<you>');
+
+-- Optional: needed for landing-enabled entities whose JSON strings need a cast/parse
+-- beyond the automatic CAST to target_data_type.
+-- INSERT INTO [control].[column_mapping]
+--     (column_mapping_id, entity_id, target_column, source_expression, active_flag, created_datetime, created_by)
+-- VALUES (<EID>01, <EID>, '<ModifiedDate>', 'to_timestamp(<ModifiedDate>, ''yyyy-MM-dd HH:mm:ss'')', 1, SYSUTCDATETIME(), '<you>');
+
+-- Runtime state: create once, never reset from here.
+INSERT INTO [control].[watermark] (entity_id, last_successful_watermark, last_run_id, last_entity_run_id, updated_datetime)
+SELECT <EID>, NULL, NULL, NULL, SYSUTCDATETIME()
+WHERE NOT EXISTS (SELECT 1 FROM [control].[watermark] WHERE entity_id = <EID>);
+
+COMMIT TRANSACTION;

@@ -34,8 +34,10 @@ If anonymisation is enabled and no `key_vault_uri` is supplied, it fails fast.
  1 STAGING    landing on : Files/landing/<src>/<tbl>/<tbl>_<ts>.json → staging (overwrite)
               landing off: verify staging only holds this run's rows and matches rowsCopied
  2 WRITE      ensure the Bronze table and technical columns exist
- 3 read       staging rows for run_id → project/cast to target columns, add _bronze_ingest_seq
- 4 VALIDATION PRE rules → audit.validation; FAIL-action failures stop here
+ 3 read       staging rows for run_id: raw (source-shaped) + projected/cast to target columns,
+              add _bronze_ingest_seq
+ 4 VALIDATION PRE rules → audit.validation; COLUMN_MISSING / DATA_TYPE_MISMATCH run on the RAW
+              rows (non-ANSI CAST silently NULLs bad values); FAIL-action failures stop here
  5 WATERMARK  batch max of the watermark column (BEFORE anonymisation)
  6 VALIDATION deduplicate (rejected_row_count = rows removed)
  7 ANONYMISE  if anonymisation_enabled AND entity.anonymisation_required

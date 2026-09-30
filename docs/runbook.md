@@ -5,6 +5,9 @@ deployment pipeline. For the *design* rationale, see `docs/cicd_pipeline.md`;
 for the service principal setup, see `docs/service_principal_requirements.md`.
 This page is commands and failure-mode fixes, not architecture.
 
+Framework runbooks are in `docs/runbooks/`: platform setup, metadata
+maintenance, operations procedures and framework changes.
+
 ## 1. Local development commands
 
 Run these from the repo root.

@@ -5,7 +5,9 @@
 > specific file, not the whole repo. Design rationale lives in
 > `docs/bronze_framework/01–14` and `docs/control_framework.md`. Load those only
 > when you need the reasoning. The target spec is
-> `docs/Fabric_Metadata_Driven_Bronze_Ingestion_Framework.md`.
+> `docs/Fabric_Metadata_Driven_Bronze_Ingestion_Framework.md`. Step-by-step
+> procedures are in `docs/runbooks/` (01 platform setup, 02 metadata maintenance,
+> 03 operations, 04 framework changes). Follow RB-02 for any `control` metadata change.
 
 ## What exists
 

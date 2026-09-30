@@ -57,10 +57,18 @@ then the Warehouse, auditing the Warehouse migration as a run.
 
 `warehouse/metadata/*.sql` is repeatable. It is re-applied when the checksum
 changes, and is idempotent (delete then insert the owned ids, in a
-transaction). Watermarks are only inserted when missing. Per environment, set
-`control.source_connection.fabric_connection_id` / `gateway_name` by a new
-numbered metadata script, or an operator-run update, **not** by editing an
-applied seed with real ids.
+transaction). Two tables hold **runtime or environment-owned** rows that
+metadata scripts only ever insert when missing, and never delete or update:
+- `control.watermark`
+- `control.source_connection`.
+
+Set the environment-specific connection values (`fabric_connection_id`,
+`gateway_name`, `database_name`) with the operator procedure in
+[runbooks/02_metadata_maintenance.md](../runbooks/02_metadata_maintenance.md) §
+Environment connection values. Never put real ids in a seed script.
+
+Step-by-step creation of every artifact is in
+[runbooks/01_platform_setup.md](../runbooks/01_platform_setup.md).
 
 ## 3. Notebook deployment
 

@@ -150,6 +150,9 @@ def test_metadata_scripts_never_reset_runtime_watermarks(path):
     text = path.read_text(encoding="utf-8")
     assert "DELETE FROM [control].[watermark]" not in text
     assert "UPDATE [control].[watermark]" not in text
+    # source_connection holds operator-set, environment-specific values
+    assert "DELETE FROM [control].[source_connection]" not in text
+    assert "UPDATE [control].[source_connection]" not in text
     for insert in re.findall(r"INSERT INTO \[control\]\.\[watermark\].*?;", text, re.DOTALL):
         assert "WHERE NOT EXISTS" in insert
     if "BEGIN TRANSACTION" in text:

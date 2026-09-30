@@ -4,6 +4,18 @@
 
 - [Fabric_Metadata_Driven_Bronze_Ingestion_Framework.md](Fabric_Metadata_Driven_Bronze_Ingestion_Framework.md): the target spec (architecture, metadata, audit, agent prompts)
 
+## Runbooks (step-by-step)
+
+| Runbook | Use it to |
+|---|---|
+| [runbooks/01_platform_setup](runbooks/01_platform_setup.md) | Create every Fabric/Azure artifact for an environment, through to the first successful run |
+| [runbooks/02_metadata_maintenance](runbooks/02_metadata_maintenance.md) | Add or change source systems, entities, columns, rules and configuration; change-impact table; retire or rebuild an entity |
+| [runbooks/03_operations_procedures](runbooks/03_operations_procedures.md) | Run, replay, re-run, reset or backfill watermarks, rotate the salt, recover from an audit outage |
+| [runbooks/04_framework_changes](runbooks/04_framework_changes.md) | Change DDL, procs and views, add a source type, release framework code |
+
+Supporting files: `warehouse/metadata/templates/1xx_entity_template.sql.template` (new-entity
+template) and `warehouse/checks/metadata_health_checks.sql` (read-only post-deploy checks).
+
 ## Bronze framework
 
 | Doc | Topic |

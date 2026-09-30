@@ -10,9 +10,16 @@ Rules for scripts in this folder:
   one transaction. Re-running a script leaves the same state.
 - **Scoped deletes.** Only delete the explicit ids the script inserts. Never
   `DELETE` a whole table, because rows added through other scripts must survive.
-- **Never reset runtime state.** `control.watermark` rows are
-  `INSERT … WHERE NOT EXISTS` only. An existing watermark is never overwritten
-  by a metadata deploy.
+- **Never reset runtime or environment-owned state.** `control.watermark` and
+  `control.source_connection` rows are `INSERT … WHERE NOT EXISTS` only. An
+  existing watermark, or an operator-set connection value, is never
+  overwritten by a metadata deploy. `tests/bronze/test_sql_contracts.py`
+  enforces this.
+- **Start from the template.** New entities start from
+  `templates/1xx_entity_template.sql.template`. The `.sql.template` extension
+  keeps the runner from applying it.
+- **Validate after deploy** with `warehouse/checks/metadata_health_checks.sql`.
+- The full procedures are in `docs/runbooks/02_metadata_maintenance.md`.
 - **No secrets and no environment endpoints.** Connection strings, Key Vault
   URIs and workspace ids come from notebook/pipeline parameters (Variable
   Library or deployment rules), not from these scripts. Key Vault secret
