@@ -1,0 +1,1 @@
+recursive-include notebooks/framework/_bundled_repo *.sql

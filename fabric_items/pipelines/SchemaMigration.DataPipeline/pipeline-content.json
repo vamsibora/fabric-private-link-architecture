@@ -1,0 +1,31 @@
+{
+  "_comment": "DRAFT content -- see fabric_items/README.md. One Notebook activity invoking SchemaMigrationRunner.Notebook. The connectionString parameter's value is swapped per stage via a Fabric Deployment Pipeline deployment rule (Dev/UAT/Prod each point at their own Warehouse SQL endpoint) -- never hardcode a real connection string here.",
+  "properties": {
+    "parameters": {
+      "TargetEnvironment": {
+        "type": "string",
+        "defaultValue": "dev"
+      }
+    },
+    "activities": [
+      {
+        "name": "RunSchemaMigration",
+        "type": "TridentNotebook",
+        "typeProperties": {
+          "notebookId": "<SchemaMigrationRunner.Notebook item id, resolved at deploy time>",
+          "workspaceId": "<current workspace id>",
+          "parameters": {
+            "target_environment": {
+              "value": "@pipeline().parameters.TargetEnvironment",
+              "type": "string"
+            },
+            "connection_string": {
+              "value": "<Warehouse SQL endpoint connection string, resolved per stage via a deployment rule>",
+              "type": "string"
+            }
+          }
+        }
+      }
+    ]
+  }
+}

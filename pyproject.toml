@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fabric-medallion-framework"
+version = "0.1.0"
+description = "CONTROL/SECURITY framework and schema migration runner for the fabric_medallion_architecture Warehouse, packaged for install as a Fabric Environment custom library."
+requires-python = ">=3.10"
+dependencies = [
+    "pyodbc>=5.0",
+]
+
+[project.optional-dependencies]
+ci = [
+    "msal>=1.28",
+    "requests>=2.31",
+]
+
+[tool.setuptools]
+packages = ["notebooks", "notebooks.framework"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+# Populated at build time by scripts/ci/fabric_publish_environment_library.py,
+# which copies warehouse/ddl/ and security/rls/ into
+# notebooks/framework/_bundled_repo/ (mirroring their repo-relative layout)
+# before invoking `python -m build` -- setuptools can only package files that
+# live inside the package tree. Not present in a normal git checkout.
+"notebooks.framework" = ["_bundled_repo/**/*.sql"]

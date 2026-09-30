@@ -1,0 +1,11 @@
+# DRAFT content -- see fabric_items/README.md.
+#
+# Custom library declaration for this Environment. The actual .whl binary is
+# NOT committed to git -- it's built and published per-environment by
+# scripts/ci/fabric_publish_environment_library.py on every deploy (see
+# docs/cicd_pipeline.md). This file just documents the expected library name
+# so a human reviewing the Environment item in the portal can confirm the
+# right library is attached.
+customLibraries:
+  wheelFiles:
+    - fabric_medallion_framework-*.whl
