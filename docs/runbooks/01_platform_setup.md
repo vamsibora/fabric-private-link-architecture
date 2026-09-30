@@ -138,8 +138,12 @@ Print only its length, never the value.
 
 a. **Source connection.** Install or register the on-premises data gateway
    (or VNet gateway) that can reach the SQL Server. Create a Fabric connection
-   *SQL Server* through that gateway, using a **read-only** source login. Note
-   its connection id: this is placeholder `…a001`.
+   *SQL Server* through that gateway, using a **read-only** source login. Copy
+   its **Connection ID** (Manage connections and gateways → ⋯ → Settings). It
+   is not bound in the pipeline: step 10 stores it in
+   `control.source_connection.fabric_connection_id`, and the extract Copy
+   binds to it at run time. Create one connection per source SQL Server
+   instance.
 
 b. **Landing connection.** Create a Fabric connection of type *Azure Data Lake
    Storage Gen2* to the account from step 5 (placeholder `…a002`).
@@ -191,7 +195,8 @@ container makes it visible there. Delete the test file afterwards.
 After the items exist in the workspace:
 1. Open every pipeline and bind the placeholders listed in
    `fabric_items/README.md`:
-   - `…a001`–`…a004`: the connections from step 6.
+   - `…a002`–`…a004`: the connections from step 6b–6d. The source
+     connection is not bound here; it is parameterised from metadata (step 10).
    - `…b001`: the Warehouse and its SQL endpoint in `LookupActiveEntities`.
    - `…b002`: the Lakehouse in `CopyToStaging`.
 2. Check that every `TridentNotebook` / `InvokePipeline` activity points at the
@@ -236,14 +241,16 @@ Both must print `OK`. Then finish the deferred grants in steps 3 and 4
 ## 10. Environment metadata
 
 1. Set this environment's connection values in `control.source_connection`,
-   following RB-02 § *Environment connection values*.
+   following RB-02 § *Environment connection values*. `fabric_connection_id`
+   (from step 6a) is **required**: without it every SQL Server entity fails
+   with `SOURCE_CONNECTION_NOT_CONFIGURED`.
 2. Review `020_framework_configuration.sql` for this environment. Check:
    - `anonymisation_enabled` is `false` **only** in PROD
    - `max_parallel_entities`
    - `landing_globally_enabled`
    - the token audiences found in step 4.
 3. Run `warehouse/checks/metadata_health_checks.sql`. Every check must return
-   no rows. Query 15 shows the source query each entity will run.
+   no rows. Query 16 shows the source query each entity will run.
 
 ## 11. Create the Bronze tables
 

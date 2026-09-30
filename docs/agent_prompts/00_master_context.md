@@ -94,7 +94,8 @@ REPO CONVENTIONS
   Copy their structure, never their ids.
 - Placeholder GUIDs (fabric_items/README.md) are the only GUIDs allowed in fabric_items:
   - 00000000-0000-0000-0000-000000000000  current workspace
-  - ...-00000000a001  source SQL Server connection
+  - ...-00000000a001  reserved; the source SQL Server connection is PARAMETERISED from
+    control.source_connection.fabric_connection_id (Copy connection = @pipeline().parameters.source_connection_id)
   - ...-00000000a002  ADLS landing connection
   - ...-00000000a003  audit SQL DB connection
   - ...-00000000a004  InvokePipeline connection

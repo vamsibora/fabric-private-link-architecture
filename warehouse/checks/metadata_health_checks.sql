@@ -109,7 +109,15 @@ WHERE s.active_flag = 1
   AND NOT EXISTS (SELECT 1 FROM [control].[source_connection] c
                   WHERE c.source_system_id = s.source_system_id AND c.environment = env.environment AND c.active_flag = 1);
 
--- 15. Final smoke check: the pipeline Lookup resolves (inspect source_query per entity)
+-- 15. Source connection not configured for an environment (the extract pipeline binds its
+--     Copy source to fabric_connection_id dynamically and fails fast when it is NULL)
+SELECT 'fabric_connection_id not set' AS problem, c.source_connection_id, c.source_system_id, c.environment
+FROM [control].[source_connection] c
+JOIN [control].[source_system] s ON s.source_system_id = c.source_system_id AND s.active_flag = 1
+WHERE c.active_flag = 1 AND s.source_type = 'SQLSERVER'
+  AND (c.fabric_connection_id IS NULL OR LTRIM(RTRIM(c.fabric_connection_id)) = '');
+
+-- 16. Final smoke check: the pipeline Lookup resolves (inspect source_query per entity)
 SELECT entity_id, source_system_name, source_table, landing_enabled, landing_folder, source_query
 FROM [control].[fn_active_entities]('DEV', NULL)
 ORDER BY processing_priority, entity_id;

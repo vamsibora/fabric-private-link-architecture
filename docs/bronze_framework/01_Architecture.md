@@ -182,3 +182,9 @@ These have not been confirmed against a real Fabric tenant:
    `https://database.windows.net/.default`).
 10. **Item-reference binding** (`notebookId`/`pipelineId` set to logical ids)
     after the first git sync (`fabric_items/README.md`).
+
+11. **Parameterised source connection over an on-premises gateway.** The extract Copy's
+    connection is `@pipeline().parameters.source_connection_id` (a Fabric connection GUID from
+    `control.source_connection`). Fabric documents GUID-based connection parameterisation;
+    support for gateway connections is reported by the community but not explicitly documented.
+    The fallback is one statically bound extract pipeline per server.

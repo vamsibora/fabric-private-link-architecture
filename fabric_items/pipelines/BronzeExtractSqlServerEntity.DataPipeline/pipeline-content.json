@@ -1,6 +1,6 @@
 {
   "properties": {
-    "description": "Extracts ONE SQL Server entity for a Bronze framework run. landing_enabled = true: Copy -> Storage Account JSON <container>/<source_system>/<table>/<table>_<yyyyMMddHHmmss>.json (never overwritten). landing_enabled = false: Copy -> Bronze Lakehouse staging table (table action Overwrite = truncate + load) stamped with _staging_run_id. Audits every step in the central audit SQL Database. Pipelines orchestrate; the BronzeFramework notebook processes. Connection ids 00000000-...-a00N are placeholders -- see fabric_items/README.md.",
+    "description": "Extracts ONE SQL Server entity for a Bronze framework run. landing_enabled = true: Copy -> Storage Account JSON <container>/<source_system>/<table>/<table>_<yyyyMMddHHmmss>.json (never overwritten). landing_enabled = false: Copy -> Bronze Lakehouse staging table (table action Overwrite = truncate + load) stamped with _staging_run_id. Audits every step in the central audit SQL Database. Pipelines orchestrate; the BronzeFramework notebook processes. The SOURCE connection is parameterised: source_connection_id (a Fabric connection GUID) comes from control.source_connection.fabric_connection_id for the entity's source system and environment, so one pipeline serves any number of SQL Server instances. The run fails fast if it is not configured. Landing and audit connection ids 00000000-...-a00N are placeholders -- see fabric_items/README.md.",
     "activities": [
       {
         "name": "AuditStartEntityRun",
@@ -111,11 +111,160 @@
         }
       },
       {
-        "name": "IfLandingEnabled",
+        "name": "IfSourceConnectionMissing",
         "type": "IfCondition",
         "dependsOn": [
           {
             "activity": "AuditStartEntityRun",
+            "dependencyConditions": [
+              "Succeeded"
+            ]
+          }
+        ],
+        "typeProperties": {
+          "expression": {
+            "value": "@empty(pipeline().parameters.source_connection_id)",
+            "type": "Expression"
+          },
+          "ifTrueActivities": [
+            {
+              "name": "AuditMissingConnectionError",
+              "type": "SqlServerStoredProcedure",
+              "dependsOn": [],
+              "policy": {
+                "timeout": "0.00:10:00",
+                "retry": 2,
+                "retryIntervalInSeconds": 30,
+                "secureOutput": false,
+                "secureInput": false
+              },
+              "typeProperties": {
+                "storedProcedureName": "[audit].[usp_log_error]",
+                "storedProcedureParameters": {
+                  "run_id": {
+                    "value": {
+                      "value": "@pipeline().parameters.run_id",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "entity_run_id": {
+                    "value": {
+                      "value": "@pipeline().parameters.entity_run_id",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "error_stage": {
+                    "value": "EXTRACT",
+                    "type": "String"
+                  },
+                  "error_code": {
+                    "value": "SOURCE_CONNECTION_NOT_CONFIGURED",
+                    "type": "String"
+                  },
+                  "error_message": {
+                    "value": {
+                      "value": "@concat('control.source_connection.fabric_connection_id is not set for ', pipeline().parameters.source_system, ' in ', pipeline().parameters.environment, ' (docs/runbooks/02_metadata_maintenance.md, Environment connection values)')",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "source_system": {
+                    "value": {
+                      "value": "@pipeline().parameters.source_system",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "source_table": {
+                    "value": {
+                      "value": "@pipeline().parameters.source_table",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "is_retryable": {
+                    "value": false,
+                    "type": "Boolean"
+                  }
+                }
+              },
+              "externalReferences": {
+                "connection": "00000000-0000-0000-0000-00000000a003"
+              }
+            },
+            {
+              "name": "AuditMissingConnectionFailed",
+              "type": "SqlServerStoredProcedure",
+              "dependsOn": [
+                {
+                  "activity": "AuditMissingConnectionError",
+                  "dependencyConditions": [
+                    "Completed"
+                  ]
+                }
+              ],
+              "policy": {
+                "timeout": "0.00:10:00",
+                "retry": 2,
+                "retryIntervalInSeconds": 30,
+                "secureOutput": false,
+                "secureInput": false
+              },
+              "typeProperties": {
+                "storedProcedureName": "[audit].[usp_update_entity_run]",
+                "storedProcedureParameters": {
+                  "entity_run_id": {
+                    "value": {
+                      "value": "@pipeline().parameters.entity_run_id",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "status": {
+                    "value": "FAILED",
+                    "type": "String"
+                  },
+                  "error_message": {
+                    "value": "Source connection not configured; see audit.error",
+                    "type": "String"
+                  }
+                }
+              },
+              "externalReferences": {
+                "connection": "00000000-0000-0000-0000-00000000a003"
+              }
+            },
+            {
+              "name": "FailSourceConnectionMissing",
+              "type": "Fail",
+              "dependsOn": [
+                {
+                  "activity": "AuditMissingConnectionFailed",
+                  "dependencyConditions": [
+                    "Completed"
+                  ]
+                }
+              ],
+              "typeProperties": {
+                "message": {
+                  "value": "@concat('No source connection configured for ', pipeline().parameters.source_system, ' in ', pipeline().parameters.environment)",
+                  "type": "Expression"
+                },
+                "errorCode": "SOURCE_CONNECTION_NOT_CONFIGURED"
+              }
+            }
+          ],
+          "ifFalseActivities": []
+        }
+      },
+      {
+        "name": "IfLandingEnabled",
+        "type": "IfCondition",
+        "dependsOn": [
+          {
+            "activity": "IfSourceConnectionMissing",
             "dependencyConditions": [
               "Succeeded"
             ]
@@ -248,7 +397,10 @@
                       }
                     },
                     "externalReferences": {
-                      "connection": "00000000-0000-0000-0000-00000000a001"
+                      "connection": {
+                        "value": "@pipeline().parameters.source_connection_id",
+                        "type": "Expression"
+                      }
                     }
                   }
                 },
@@ -809,7 +961,10 @@
                       }
                     },
                     "externalReferences": {
-                      "connection": "00000000-0000-0000-0000-00000000a001"
+                      "connection": {
+                        "value": "@pipeline().parameters.source_connection_id",
+                        "type": "Expression"
+                      }
                     }
                   },
                   "additionalColumns": [
@@ -1181,6 +1336,10 @@
         "defaultValue": ""
       },
       "source_database": {
+        "type": "string",
+        "defaultValue": ""
+      },
+      "source_connection_id": {
         "type": "string",
         "defaultValue": ""
       },

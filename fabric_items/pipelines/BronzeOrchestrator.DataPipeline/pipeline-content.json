@@ -293,6 +293,10 @@
                               "value": "@item().source_database",
                               "type": "Expression"
                             },
+                            "source_connection_id": {
+                              "value": "@coalesce(item().source_connection_id, '')",
+                              "type": "Expression"
+                            },
                             "source_query": {
                               "value": "@item().source_query",
                               "type": "Expression"

@@ -16,6 +16,8 @@
 --   STRING   -> quoted, with embedded quotes doubled
 -- landing_enabled is the entity flag ANDed with the environment's
 -- landing_globally_enabled switch.
+-- source_connection_id is the environment's Fabric connection for the entity's
+-- source system; the extract pipeline binds its Copy source to it dynamically.
 CREATE OR ALTER FUNCTION [control].[fn_active_entities]
 (
     @environment  VARCHAR(10),
@@ -49,6 +51,7 @@ SELECT
     w.last_successful_watermark,
     sc.connection_reference,
     sc.database_name                                                      AS source_database,
+    sc.fabric_connection_id                                               AS source_connection_id,  -- Fabric connection GUID used by the extract Copy (parameterised connection)
     e.processing_priority,
     COALESCE(lc.retry_enabled, CAST(0 AS BIT))                            AS retry_enabled,
     COALESCE(lc.max_retry_count, 0)                                       AS max_retry_count,

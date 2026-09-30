@@ -23,7 +23,15 @@ BronzeOrchestrator.DataPipeline:
    never overwrites a terminal status.
 
 BronzeExtractSqlServerEntity.DataPipeline:
+- The Copy SOURCE connection is PARAMETERISED:
+  externalReferences.connection = @pipeline().parameters.source_connection_id, a Fabric
+  connection GUID from control.source_connection.fabric_connection_id, passed through
+  fn_active_entities and the orchestrator. Use the connection ID, not the name. One pipeline
+  serves every SQL Server instance.
 - usp_start_entity_run (EXTRACTING) ->
+  IfCondition empty(source_connection_id): usp_log_error SOURCE_CONNECTION_NOT_CONFIGURED ->
+  usp_update_entity_run FAILED -> Fail ->
+  (on Succeeded)
   IfCondition landing_enabled:
   TRUE:
     - GetMetadata exists -> Fail LANDING_FILE_EXISTS

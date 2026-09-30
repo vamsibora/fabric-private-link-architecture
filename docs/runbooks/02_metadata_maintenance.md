@@ -52,7 +52,7 @@ the script and what extra steps a change needs.
 6. **Validate in DEV.**
    1. Run `warehouse/checks/metadata_health_checks.sql` in the Warehouse SQL
       editor. Every check must return no rows.
-   2. Query 15 shows the resolved `source_query` for each entity. Read it for
+   2. Query 16 shows the resolved `source_query` for each entity. Read it for
       the entity you changed.
    3. If tables or columns changed, run `MetadataInitialisation` (or let the
       next run add columns; see the change-impact table).
@@ -73,7 +73,7 @@ other action. "Rebuild" means the Bronze table must be rebuilt: see
 | Change `entity_group` or `processing_priority` | Next run | Safe. Affects scheduling only. |
 | Change `load_configuration` retry settings or `row_count_anomaly_threshold_pct` | Next run | Safe. |
 | Toggle `landing_enabled` | Next run | Safe between runs. Both paths overwrite staging, and the watermark is unaffected. Replay is only possible for runs that landed a file. |
-| Change `source_filter` / `source_query_override` | Next run | The filter narrows what is extracted; rows already in Bronze stay. Check query 15. |
+| Change `source_filter` / `source_query_override` | Next run | The filter narrows what is extracted; rows already in Bronze stay. Check query 16. |
 | **Add a column** | Next run + re-version | Bronze gets the column automatically (`ensure_bronze_table` runs before every write; the copy recreates staging). Existing rows hold NULL until the key is next loaded. If `hash_flag = 1`, every record's hash changes when it is next loaded: MERGE updates each key once, and HISTORY writes one new version per key. Expected, but tell downstream consumers. |
 | **Deactivate a column** (`active_flag = 0`) | Next run + re-version | The column is no longer extracted. The Bronze column is **not** dropped: MERGE keeps its last value, and new rows get NULL. The hash changes (see above). To physically drop the column, use RB-04. |
 | Rename a column (`target_column`) | Rebuild, or treat as add + deactivate | The Bronze column name is part of the table. Prefer adding the new name and deactivating the old one. |
@@ -131,13 +131,17 @@ source type.
   `source_system_name` and `bronze_schema`), plus its three
   `source_connection` rows (`WHERE NOT EXISTS`) with the `database_name`.
   `fn_active_entities` passes `source_database` to the copy.
-- **Same kind of source, different server.** The extract pipeline's source
-  connection (`…a001`) is bound once per workspace, so every SQL Server
-  entity uses the same Fabric connection. A second server needs either:
-  - a second extract pipeline bound to its own connection, and a Switch case
-    keyed on the source (RB-04), **or**
-  - a parameterised Fabric connection, **if** the tenant supports it.
-    Verify live before relying on this.
+- **Same kind of source, different server.**
+  1. Create a Fabric connection to the new server, in every environment
+     (RB-01 step 6a).
+  2. Add a `source_system` row and its three `source_connection` rows,
+     exactly as above.
+  3. Set each environment's `fabric_connection_id` (§ *Environment connection
+     values*).
+
+  No pipeline change is needed. The extract pipeline's Copy source connection
+  is **parameterised**: `control.fn_active_entities` returns the entity's
+  `source_connection_id`, and the Copy binds to it at run time.
 - **New kind of source** (Oracle, REST, ServiceNow, …): RB-04 § *Add a
   source type*.
 
@@ -152,10 +156,26 @@ it: renaming breaks replay of existing files.
 environment-specific values once per environment. The seed never
 overwrites them.
 
+**`fabric_connection_id` is required.** The extract pipeline binds its Copy
+source to this connection GUID. Until it is set, every entity of that
+source system fails fast in that environment with
+`SOURCE_CONNECTION_NOT_CONFIGURED` (in `audit.error`), and health check 15
+lists the missing rows.
+
+To find the GUID, go to Settings → Manage connections and gateways, then the
+connection's ⋯ → Settings, and copy the **Connection ID**. Use the id, not the
+connection name: name-based parameterisation is reported not to work for
+gateway connections.
+
+The pipeline identity must have access to the connection. Share it with the
+identity; nothing in metadata grants access. Because a `control` writer can
+point extraction at any connection that identity can use, restrict write
+access to `control` to the deployment identity and the platform team.
+
 ```sql
 -- Warehouse of the target environment; record the change in the ticket.
 UPDATE control.source_connection
-SET fabric_connection_id = '<Fabric connection id>',   -- informational: the copy uses the connection bound in the pipeline
+SET fabric_connection_id = '<Fabric connection id>',   -- USED: the extract Copy binds its source connection to this GUID
     gateway_name         = '<gateway name>',
     database_name        = '<source database>',        -- USED: passed to the copy as source_database
     updated_datetime     = SYSUTCDATETIME(),
@@ -249,7 +269,7 @@ PROD.
 
 ```text
 warehouse/checks/metadata_health_checks.sql   every check returns no rows
-query 15                                      the entity resolves, and source_query is correct
+query 16                                      the entity resolves, and source_query is correct
 MetadataInitialisation                        run when tables or columns were added
 BronzeOrchestrator (entity_group)             entity SUCCEEDED in audit.vw_entity_status
 ```

@@ -143,7 +143,29 @@ def test_every_copy_failure_is_audited_then_fails_the_pipeline():
         handlers = [a for a in activities if any(d == {"activity": copy_name, "dependencyConditions": ["Failed"]}
                                                  for d in a.get("dependsOn", []))]
         assert handlers and handlers[0]["typeProperties"]["storedProcedureName"] == "[audit].[usp_log_error]"
-    assert sum(1 for a in activities if a["type"] == "Fail") == 3
+    assert sum(1 for a in activities if a["type"] == "Fail") == 4
+
+
+def test_source_connection_is_parameterised_from_metadata():
+    """One extract pipeline serves any SQL Server instance: the Copy source
+    connection is the Fabric connection GUID from
+    control.source_connection.fabric_connection_id (via fn_active_entities)."""
+    activities = _extract()
+    for copy_name in ("CopyToLanding", "CopyToStaging"):
+        copy = next(a for a in activities if a["name"] == copy_name)
+        connection = copy["typeProperties"]["source"]["datasetSettings"]["externalReferences"]["connection"]
+        assert connection == {"value": "@pipeline().parameters.source_connection_id", "type": "Expression"}
+    guard = next(a for a in activities if a["name"] == "IfSourceConnectionMissing")
+    assert guard["typeProperties"]["expression"]["value"] == "@empty(pipeline().parameters.source_connection_id)"
+    assert [a["type"] for a in guard["typeProperties"]["ifTrueActivities"]] == [
+        "SqlServerStoredProcedure", "SqlServerStoredProcedure", "Fail"]
+    landing_if = next(a for a in activities if a["name"] == "IfLandingEnabled")
+    assert landing_if["dependsOn"] == [{"activity": "IfSourceConnectionMissing", "dependencyConditions": ["Succeeded"]}]
+
+    pipeline = _load(ROOT / "pipelines/BronzeOrchestrator.DataPipeline/pipeline-content.json")["properties"]
+    invoke = next(a for a in _activities(pipeline["activities"]) if a["name"] == "ExtractSqlServerEntity")
+    assert invoke["typeProperties"]["parameters"]["source_connection_id"]["value"] == (
+        "@coalesce(item().source_connection_id, '')")
 
 
 def test_orchestrator_run_ids_match_run_manager_format():
