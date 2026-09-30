@@ -85,11 +85,19 @@ ALTER ROLE db_owner ADD MEMBER [spn-fabric-medallion-cicd-shared];
 ```
 
 If `db_owner` is considered too broad for a CI identity, use a narrower
-custom role instead — grant `CREATE SCHEMA`, `CREATE TABLE`, `ALTER` on the
-`CONTROL` and `SECURITY` schemas, plus `SELECT`/`INSERT`/`UPDATE` on
-`CONTROL.*` (the migration runner only ever needs DDL on those two schemas
-and DML on the `CONTROL.SchemaMigrationHistory` ledger and other `CONTROL`
-tables via `utils_logging`).
+custom role instead. Grant `CREATE SCHEMA`, `CREATE TABLE`, `CREATE FUNCTION`
+and `ALTER` on the `control` and `SECURITY` schemas, plus
+`SELECT`/`INSERT`/`UPDATE`/`DELETE` on `control.*`. The migration runner
+needs DDL on those two schemas, plus DML for the
+`control.schema_migration_history` ledger and the idempotent metadata
+scripts.
+
+Repeat the bootstrap for the central **audit Fabric SQL Database**
+(`BronzeFrameworkAudit`) in the Audit / Operations workspace. The migration
+identity needs DDL on schema `audit`, including `CREATE PROCEDURE` and
+`CREATE VIEW`. The runtime identities of each engineering workspace need only
+`GRANT EXECUTE ON SCHEMA::audit`. See
+`docs/bronze_framework/security_review.md`.
 
 This step **cannot be automated by the CI pipeline itself** — the pipeline
 has no permissions on the Warehouse until this bootstrap runs, so it must be
@@ -103,5 +111,6 @@ done manually before the first `deploy-dev` run.
 - [ ] SPN added as Member on Dev workspace (UAT/Prod once they exist)
 - [ ] SPN assigned a role on the Deployment Pipeline object (once created)
 - [ ] `CREATE USER ... FROM EXTERNAL PROVIDER` + role grant run against Dev's Warehouse (UAT/Prod once they exist)
+- [ ] Same bootstrap run against the audit SQL Database; runtime identities granted `EXECUTE ON SCHEMA::audit`
 - [ ] GitHub repo secrets/variables created: tenant ID, client ID, workspace IDs, item IDs, deployment pipeline/stage IDs
 - [ ] GitHub Environments `uat` and `prod` created with required reviewers configured

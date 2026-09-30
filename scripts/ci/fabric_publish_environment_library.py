@@ -1,7 +1,10 @@
-"""Builds the notebooks/framework wheel (embedding warehouse/ddl/ and
-security/rls/ as package data) and publishes it as a custom library to a
-target Fabric Environment item, so a Notebook using that Environment can
-`from notebooks.framework import migration_runner`.
+"""Builds the framework wheel (notebooks.framework + notebooks.bronze,
+embedding every migration root -- warehouse/ddl, security/rls,
+warehouse/programmability, warehouse/metadata and sql_database/audit -- as
+package data) and publishes it as a custom library to a target Fabric
+Environment item, so a Notebook using that Environment can
+`from notebooks.framework import migration_runner` and
+`from notebooks.bronze import orchestrator`.
 
 Library publish operations can take several minutes -- this lengthens every
 deploy. If that proves too slow/flaky in practice, the documented fallback
@@ -23,18 +26,30 @@ from scripts.ci._fabric_api import FABRIC_API_BASE, FabricApiError, get_access_t
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BUNDLE_DIR = REPO_ROOT / "notebooks" / "framework" / "_bundled_repo"
 
+# Every folder migration_runner.discover_scripts() reads, for every target.
+# Missing folders are skipped (e.g. a trimmed-down test repo).
+BUNDLED_FOLDERS = (
+    "warehouse/ddl",
+    "warehouse/programmability",
+    "warehouse/metadata",
+    "security/rls",
+    "sql_database/audit",
+)
+
 
 def stage_bundled_sql(repo_root: Path = REPO_ROOT) -> Path:
-    """Copies warehouse/ddl/ and security/rls/ into
-    notebooks/framework/_bundled_repo/, mirroring their repo-relative
-    layout -- setuptools package_data can only include files that live
-    inside the package tree, and migration_runner.discover_scripts() must
-    find them at the same relative paths once unpacked from the wheel."""
+    """Copies every BUNDLED_FOLDERS entry into
+    notebooks/framework/_bundled_repo/, mirroring its repo-relative layout --
+    setuptools package_data can only include files that live inside the
+    package tree, and migration_runner.discover_scripts() must find them at
+    the same relative paths once unpacked from the wheel."""
     bundle_dir = repo_root / "notebooks" / "framework" / "_bundled_repo"
     if bundle_dir.exists():
         shutil.rmtree(bundle_dir)
-    shutil.copytree(repo_root / "warehouse" / "ddl", bundle_dir / "warehouse" / "ddl")
-    shutil.copytree(repo_root / "security" / "rls", bundle_dir / "security" / "rls")
+    for folder in BUNDLED_FOLDERS:
+        source = repo_root / folder
+        if source.is_dir():
+            shutil.copytree(source, bundle_dir / folder)
     return bundle_dir
 
 

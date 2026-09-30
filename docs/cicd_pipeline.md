@@ -9,11 +9,13 @@ Dev → UAT → Prod. For the service-principal setup this depends on, see
 
 Fabric's native Deployment Pipelines promote most workspace items (notebooks,
 data pipelines, environments, semantic models, reports) between stages, but
-**do not** promote Fabric Warehouse schema/data between stages as of current
-GA. `warehouse/ddl/` is also `CREATE`-only T-SQL with no built-in tracking of
-what's already been applied. This repo's migration ledger
-(`CONTROL.SchemaMigrationHistory`) and runner (`notebooks/framework/
-migration_runner.py`) exist specifically to fill that gap — re-verify the
+**do not** promote Fabric Warehouse schema/data, or the central audit Fabric
+SQL Database's schema, between stages as of current GA. `warehouse/ddl/` is
+also `CREATE`-only T-SQL with no built-in tracking of what's already been
+applied. This repo's migration ledgers (`control.schema_migration_history` in
+the Warehouse, `audit.schema_migration_history` in the audit database) and
+runner (`notebooks/framework/migration_runner.py`) exist specifically to fill
+that gap — re-verify the
 Warehouse-promotion limitation against current Microsoft Learn docs
 periodically, since Fabric iterates quickly here; if it's since been added,
 this custom mechanism may be simplifiable.
@@ -29,7 +31,20 @@ this custom mechanism may be simplifiable.
   read-only post-deploy smoke test.
 - The actual schema migration always executes **inside Fabric**, as a
   Notebook item run via a Data Pipeline job, so it runs with the notebook's
-  own identity against the target Warehouse.
+  own identity against the target databases.
+
+## Migration targets
+
+`migration_runner.MigrationTarget` describes each database. Within a run, the
+audit database is migrated first, so the Warehouse migration can be audited.
+
+| Order | Target | CREATE-once roots (applied once, never re-run) | Repeatable roots (re-applied on checksum change) | Ledger |
+|---|---|---|---|---|
+| 1 | `AUDIT_DB` (Fabric SQL Database `BronzeFrameworkAudit`) | `sql_database/audit/ddl/**` | `sql_database/audit/procs/**`, then `sql_database/audit/views/**` | `audit.schema_migration_history` |
+| 2 | `WAREHOUSE` | `warehouse/ddl/**`, then `security/rls/*` | `warehouse/programmability/**`, then `warehouse/metadata/**` | `control.schema_migration_history` |
+
+Repeatable scripts are `CREATE OR ALTER` procs, views and functions, or
+idempotent metadata upserts. They get one ledger row per applied checksum.
 
 ## Branch / promotion strategy
 
@@ -42,20 +57,21 @@ is Microsoft's recommended pattern and avoids branch-per-environment drift.
 
 | Component | Path | Purpose |
 |---|---|---|
-| Migration ledger | `warehouse/ddl/05_meta/050_control_schemamigrationhistory.sql` | Tracks which DDL/RLS scripts have been applied per environment. |
-| Migration runner | `notebooks/framework/migration_runner.py` | Applies pending scripts in order; safe to re-run; halts on failure. |
+| Migration ledgers | `warehouse/ddl/05_meta/050_control_schema_migration_history.sql`, `sql_database/audit/ddl/05_meta/050_audit_schema_migration_history.sql` | Track which scripts (and which checksum of each repeatable script) have been applied per environment. |
+| Migration runner | `notebooks/framework/migration_runner.py` | Applies pending scripts per target in order; safe to re-run; halts on failure. |
 | Shared connection helpers | `notebooks/framework/fabric_connection.py` | notebookutils-token and SPN-token pyodbc connections. |
-| Fabric Notebook | `fabric_items/notebooks/SchemaMigrationRunner.Notebook/` | Thin wrapper: `start_pipeline_run` → `run_migrations` → `end_pipeline_run`/`log_error`. |
-| Fabric Data Pipeline | `fabric_items/pipelines/SchemaMigration.DataPipeline/` | One Notebook activity; `TargetEnvironment` parameter; Warehouse connection swapped per stage via a deployment rule. |
-| Fabric Environment | `fabric_items/environments/CicdFramework.Environment/` | Hosts the custom library (wheel) so the notebook can `import migration_runner`. |
+| Fabric Notebook | `fabric_items/notebooks/SchemaMigrationRunner.Notebook/` | Thin wrapper: migrate `AUDIT_DB`, then `AuditManager.start_run`, migrate `WAREHOUSE` (drift warnings → `audit.error`), `complete_run`. |
+| Fabric Data Pipeline | `fabric_items/pipelines/SchemaMigration.DataPipeline/` | One Notebook activity. Parameters `TargetEnvironment`, `warehouse_connection_string`, `audit_connection_string`, bound per stage via deployment rules / Variable Library. |
+| Fabric Environment | `fabric_items/environments/CicdFramework.Environment/` | Hosts the custom library (wheel) with `notebooks.framework` and `notebooks.bronze`. |
 | CI helper scripts | `scripts/ci/*.py` | Fabric REST API calls: git sync, library publish, job run, stage deploy, smoke test. |
 | Workflows | `.github/workflows/pr-checks.yml`, `.github/workflows/cicd-pipeline.yml` | PR gate; deploy-dev → promote-uat → promote-prod. |
 
 ## Shipping runner code + SQL into Fabric
 
-`scripts/ci/fabric_publish_environment_library.py` copies `warehouse/ddl/`
-and `security/rls/` into `notebooks/framework/_bundled_repo/` (mirroring
-their repo-relative layout — setuptools can only package files inside the
+`scripts/ci/fabric_publish_environment_library.py` copies every
+`BUNDLED_FOLDERS` entry (`warehouse/ddl`, `warehouse/programmability`,
+`warehouse/metadata`, `security/rls`, `sql_database/audit`) into
+`notebooks/framework/_bundled_repo/` (mirroring their repo-relative layout — setuptools can only package files inside the
 package tree), builds a wheel via `python -m build`, and publishes it as a
 custom library to the target environment's `CicdFramework.Environment`. The
 notebook then calls `migration_runner.discover_scripts()` against that
@@ -77,8 +93,8 @@ OIDC):
 | Job | GH Environment | Steps |
 |---|---|---|
 | `test` | — | pytest safety net |
-| `deploy-dev` | none | `azure/login` (OIDC) → `fabric_git_sync.py` → `fabric_publish_environment_library.py` → `fabric_run_item_job.py` (runs `SchemaMigration.DataPipeline` against Dev) → `verify_migration_state.py --env dev` |
-| `promote-uat` | `uat` (required reviewers) | `fabric_deploy_pipeline_stage.py` (Dev→UAT) → publish library to UAT → run migration pipeline against UAT → `verify_migration_state.py --env uat` |
+| `deploy-dev` | none | `azure/login` (OIDC) → `fabric_git_sync.py` → `fabric_publish_environment_library.py` → `fabric_run_item_job.py` (runs `SchemaMigration.DataPipeline` against Dev) → `verify_migration_state.py --env dev --target audit_db` and `--target warehouse` |
+| `promote-uat` | `uat` (required reviewers) | `fabric_deploy_pipeline_stage.py` (Dev→UAT) → publish library to UAT → run migration pipeline against UAT → `verify_migration_state.py --env uat` for both targets |
 | `promote-prod` | `prod` (required reviewers) | same shape, UAT→Prod |
 
 Manual approval gates need no custom code — a job declaring
@@ -116,8 +132,11 @@ against current Fabric docs before relying on it in production.
 
 ## Ongoing rule for schema changes
 
-Every future schema change is a **new numbered file** under
-`warehouse/ddl/`. **Never edit an already-`SUCCEEDED` DDL file** — Fabric DW
+Every future table/constraint change is a **new numbered file** under
+`warehouse/ddl/` or `sql_database/audit/ddl/`. Repeatable scripts
+(`warehouse/programmability`, `warehouse/metadata`, `sql_database/audit/procs`,
+`sql_database/audit/views`) are edited in place and re-applied automatically.
+**Never edit an already-`SUCCEEDED` CREATE-once DDL file** — Fabric DW
 DDL is `CREATE`-only and non-idempotent, so the migration runner will never
 re-execute it; it will only flag the checksum drift as a warning. This must
 be treated as a hard rule, not just something the drift check happens to
@@ -131,9 +150,12 @@ catch.
 - Git integration push-vs-pull semantics may change.
 - The wheel-published-to-Environment-library approach is this repo's own
   design choice, not a Microsoft-prescribed pattern — watch publish latency.
-- `NOT ENFORCED` constraints mean the ledger's `UNIQUE(ScriptPath)` doesn't
-  stop the application layer from double-inserting — correctness is
+- The Warehouse ledger's constraints are `NOT ENFORCED`. Correctness is
   entirely in `migration_runner.py`'s pending-set logic.
+- `SchemaMigration` needs network reach from the engineering workspace to the
+  cross-workspace audit SQL Database. Outbound access protection can block
+  this (see `docs/bronze_framework/01_Architecture.md`).
+- Nothing in this pipeline has been run against live Fabric.
 - Exact Fabric REST API paths used by `scripts/ci/*.py` should be
   double-checked against current Microsoft Learn docs — the surface is
   still evolving.

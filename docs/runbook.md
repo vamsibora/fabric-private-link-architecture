@@ -13,9 +13,13 @@ Run these from the repo root.
 # Install dependencies (pytest, build, msal, requests, pyodbc)
 pip install -r requirements-dev.txt
 
-# Full test suite (49 tests as of this writing, everything mocked -- no
-# Fabric/Azure connection needed)
+# Full test suite (everything mocked -- no Fabric/Azure connection needed;
+# tests marked `spark` skip automatically without Java/pyspark)
 pytest -q
+
+# Framework unit tests / Spark end-to-end tests
+pytest tests/bronze -v
+pytest -m spark -v
 
 # Just the migration runner or connection tests
 pytest tests/framework/test_migration_runner.py -v
@@ -27,14 +31,15 @@ pytest tests/ci/ -v
 
 ### Build the framework wheel locally (no upload)
 
-Useful for confirming packaging still works after touching `warehouse/ddl/`,
-`security/rls/`, or `notebooks/framework/`.
+Useful for confirming packaging still works after touching any migration
+root (`warehouse/ddl/`, `warehouse/programmability/`, `warehouse/metadata/`,
+`security/rls/`, `sql_database/audit/`) or `notebooks/`.
 
 ```bash
 python -c "from scripts.ci.fabric_publish_environment_library import build_wheel; print(build_wheel())"
 ```
 
-This copies `warehouse/ddl/` and `security/rls/` into
+This copies every migration root into
 `notebooks/framework/_bundled_repo/` (transient — cleaned up automatically,
 even on failure), runs `python -m build --wheel`, and prints the path to the
 resulting `.whl` in `dist/`. To inspect what actually got packaged:
@@ -50,7 +55,7 @@ python -m scripts.ci.fabric_git_sync --help
 python -m scripts.ci.fabric_run_item_job --help
 python -m scripts.ci.fabric_deploy_pipeline_stage --help
 python -m scripts.ci.fabric_publish_environment_library --help
-python -m scripts.ci.verify_migration_state --help
+python -m scripts.ci.verify_migration_state --help   # --env, --target warehouse|audit_db
 ```
 
 All five must be invoked with `python -m scripts.ci.<name>` (not
@@ -77,6 +82,12 @@ CREATE USER [spn-fabric-medallion-cicd-shared] FROM EXTERNAL PROVIDER;
 ALTER ROLE db_owner ADD MEMBER [spn-fabric-medallion-cicd-shared];
 ```
 
+Run the same bootstrap against the central **audit SQL Database**
+(`BronzeFrameworkAudit`), for the SPN and for the identity the migration
+notebook runs as. Runtime identities (the notebook/pipeline identity of each
+engineering workspace) instead need `GRANT EXECUTE ON SCHEMA::audit`. See
+`docs/bronze_framework/security_review.md`.
+
 Portal steps (no CLI equivalent as of current Fabric GA — do these in the
 Fabric admin portal / workspace UI):
 1. Enable "Service principals can use Fabric APIs" (Admin Portal → Tenant
@@ -96,9 +107,12 @@ Fabric admin portal / workspace UI):
 |---|---|
 | `AZURE_TENANT_ID` | all `azure/login` steps |
 | `AZURE_CLIENT_ID` | all `azure/login` steps |
-| `DEV_WAREHOUSE_CONNECTION_STRING` | `deploy-dev`'s `verify_migration_state.py` |
-| `UAT_WAREHOUSE_CONNECTION_STRING` | `promote-uat`'s `verify_migration_state.py` |
-| `PROD_WAREHOUSE_CONNECTION_STRING` | `promote-prod`'s `verify_migration_state.py` |
+| `DEV_WAREHOUSE_CONNECTION_STRING` / `DEV_AUDIT_DB_CONNECTION_STRING` | `deploy-dev`'s `verify_migration_state.py` (`--target warehouse` / `--target audit_db`) |
+| `UAT_WAREHOUSE_CONNECTION_STRING` / `UAT_AUDIT_DB_CONNECTION_STRING` | `promote-uat`'s `verify_migration_state.py` |
+| `PROD_WAREHOUSE_CONNECTION_STRING` / `PROD_AUDIT_DB_CONNECTION_STRING` | `promote-prod`'s `verify_migration_state.py` |
+
+The workflow maps these onto the `WAREHOUSE_CONNECTION_STRING` /
+`AUDIT_DB_CONNECTION_STRING` environment variables the script reads.
 
 **Variables** (same page, Variables tab):
 
@@ -142,13 +156,17 @@ python -m scripts.ci.fabric_git_sync --workspace-id <dev-workspace-id>
 python -m scripts.ci.fabric_publish_environment_library --workspace-id <dev-workspace-id> --environment-id <dev-environment-id>
 python -m scripts.ci.fabric_run_item_job --workspace-id <dev-workspace-id> --item-id <dev-pipeline-item-id> --target-environment dev
 
-WAREHOUSE_CONNECTION_STRING="<dev connection string>" python -m scripts.ci.verify_migration_state --env dev
+AUDIT_DB_CONNECTION_STRING="<dev audit db connection string>" python -m scripts.ci.verify_migration_state --env dev --target audit_db
+WAREHOUSE_CONNECTION_STRING="<dev connection string>" python -m scripts.ci.verify_migration_state --env dev --target warehouse
 ```
 
 ## 5. Why re-running is safe
 
-`migration_runner.run_migrations()` only executes a script if it's not
-already recorded as `SUCCEEDED` in `CONTROL.SchemaMigrationHistory`. Running
+`migration_runner.run_migrations()` only executes a CREATE-once script if
+it's not already recorded as `SUCCEEDED` in the target's ledger
+(`control.schema_migration_history` / `audit.schema_migration_history`), and
+only re-applies a repeatable script (procs, views, functions, metadata) when
+its checksum differs from the latest `SUCCEEDED` row. Running
 the same deploy twice in a row applies zero new scripts the second time.
 The one thing that is **not** safe: editing an already-`SUCCEEDED` DDL file.
 Fabric Warehouse DDL is `CREATE`-only — the runner will never re-execute a
@@ -161,13 +179,15 @@ new numbered file instead.
 
 - Confirm `pip install -r requirements-dev.txt` actually ran — `msal` and
   `requests` are only in the dev requirements, not `requirements.txt`.
-- `notebooks/framework/utils_logging.py` and `migration_runner.py`'s
-  `_warn_checksum_drift` both need `notebookutils` importable; the tests
-  stub it via `sys.modules.setdefault("notebookutils", ...)` at the top of
-  each test file. If you add a *new* test file that imports either module
-  (directly or via `patch("notebooks.framework.utils_logging....")`),
-  copy that stub block in, or the import will fail with
-  `ModuleNotFoundError: notebookutils`.
+- Modules that touch `notebookutils` (`fabric_connection`, `audit_manager`,
+  `landing_manager`, the `anonymisation_engine` resolver) import it lazily,
+  but tests still stub it via `sys.modules.setdefault("notebookutils", ...)`.
+  If you add a *new* test file that exercises those paths, copy that stub
+  block in, or the import will fail with
+  `ModuleNotFoundError: notebookutils`. (`utils_logging.py` has been removed;
+  audit is `notebooks/bronze/audit_manager.py`.)
+- Spark tests are skipped locally when Java plus `pyspark`/`delta-spark`
+  aren't available. That is expected.
 
 ### 6.2 `python -m scripts.ci.<name>` fails with `ModuleNotFoundError: No module named 'scripts'`
 
@@ -218,7 +238,8 @@ defaulting to the checkout root).
   wasn't updated — confirm the Notebook item is actually configured to use
   `CicdFramework.Environment` in the portal.
 - If it failed partway through applying scripts: check
-  `CONTROL.SchemaMigrationHistory` directly in that environment's Warehouse
+  `control.schema_migration_history` (Warehouse) or
+  `audit.schema_migration_history` (audit DB) directly in that environment
   — the `FAILED` row's `ErrorMessage` column has the real T-SQL error. Fix
   the underlying DDL issue in a **new** numbered file (never edit the
   failed file's predecessor scripts), and re-run; the runner picks up
@@ -229,13 +250,15 @@ defaulting to the checkout root).
   attached Lakehouse/storage for the fallback-logged JSON payload plus a
   `CRITICAL` line in the notebook's own run log.
 
-### 6.6 Checksum drift warning in `CONTROL.ErrorLog` (severity `WARNING`)
+### 6.6 Checksum drift warning (`audit.error`, error_code `CHECKSUM_DRIFT`)
 
 Someone edited an already-`SUCCEEDED` DDL file on disk. The runner
 deliberately does **not** re-execute it (Fabric DW DDL is `CREATE`-only —
 re-running would just error, or worse, silently diverge from what's really
 in the Warehouse). To resolve:
 1. Revert the edit to the original file (restores the recorded checksum), **or**
+   (Repeatable scripts never drift: editing them in place is the supported
+   way to change procs, views, functions and metadata.)
 2. If the change was intentional, express it as a **new** numbered DDL file
    (e.g. an `ALTER TABLE` in a new `035_...sql` or next-available prefix)
    instead of modifying history.
@@ -269,7 +292,7 @@ in the Warehouse). To resolve:
   expected — it lands via the *separate* `fabric_run_item_job.py` step that
   runs right after in the same GitHub Actions job.
 
-### 6.9 `verify_migration_state.py` reports `FAIL: N expected migration(s) not SUCCEEDED`
+### 6.9 `verify_migration_state.py` reports `FAIL: N expected migration(s) not SUCCEEDED` (or `repeatable script(s) not applied at current checksum`)
 
 - This means the schema migration step before it didn't actually finish
   applying everything — check the `fabric_run_item_job.py` step's job

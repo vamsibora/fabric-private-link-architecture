@@ -1,83 +1,102 @@
-# Control & Security Framework
+# Control, Audit & Security Framework
 
-Foundational metadata-driven framework for the Fabric Warehouse: ingestion configuration, pipeline/table run tracing, error/quarantine handling, and Row-Level Security. This document explains the design decisions behind `warehouse/ddl/`, `security/rls/`, and `notebooks/framework/utils_logging.py`.
+Design rationale for the metadata plane (`warehouse/`), the audit plane
+(`sql_database/audit/`), the audit writer
+(`notebooks/bronze/audit_manager.py`) and Row-Level Security (`security/rls/`).
+Table-by-table reference: [bronze_framework/02_Metadata_Model.md](bronze_framework/02_Metadata_Model.md)
+and [bronze_framework/05_Audit_Design.md](bronze_framework/05_Audit_Design.md).
 
-## Schemas and tables
+## Two planes
 
-### CONTROL
+| Plane | Store | Holds | Changes |
+|---|---|---|---|
+| Control | Fabric Warehouse, schema `control` | Source systems, connections (references), entities, columns, load config, watermarks, anonymisation/validation rules, mappings, pipeline/framework config | Deployed as code (`warehouse/metadata/`); watermarks updated by the framework on success |
+| Audit | Central Fabric SQL Database `BronzeFrameworkAudit`, schema `audit` | run, entity_run, activity, error, validation, file | Append/point-update at runtime from every workspace |
 
-| Table | Purpose |
-|---|---|
-| `IngestionConfig` | One row per source object -> target table mapping. Drives what the ingestion framework loads and how (`LoadType`: FULL / INCREMENTAL / CDC, `WatermarkColumn`). |
-| `AnonymizationRule` | Defines *what* should be anonymized for a source column (`RuleType`, `RuleParameters`, `SaltKeyVaultSecret`). See [Anonymization scope](#anonymization-scope) below. |
-| `PipelineRun` | Top tier of the tracing hierarchy — one row per pipeline/notebook invocation. |
-| `TableRun` | Middle tier — one row per table processed within a `PipelineRun`. |
-| `ErrorLog` | Written by `utils_logging.log_error()`; may attach to a `PipelineRunID` and/or `TableRunID`. |
-| `Quarantine` | Rows rejected during a `TableRun` (failed data quality checks), held for inspection/replay rather than dropped. |
+Control metadata defines what should happen. Audit records what actually
+happened.
 
-### SECURITY
-
-| Table | Purpose |
-|---|---|
-| `UserAccess` | Source of truth for RLS. Grants a `UserPrincipalName` access to a `RegionKey`/`CountryKey`/`BusinessUnitKey` combination. `NULL` on any key column is a wildcard for that dimension. |
+The previous design kept `PipelineRun`/`TableRun`/`ErrorLog`/`Quarantine` in a
+PascalCase `CONTROL` schema inside the Warehouse, written by `utils_logging.py`.
+It was retired before any deployment, for two reasons: audit must be shared
+across workspaces, and it needs enforced keys and indexes that Fabric DW
+lacks. The lowercase `control` schema is a distinct schema, because Fabric DW
+identifiers are case-sensitive.
 
 ## Fabric Warehouse constraints reflected in the DDL
 
-- No `NVARCHAR`/`DATETIME`/`MONEY` — use `VARCHAR` (UTF-8 collation) and `DATETIME2(6)`.
-- No `DEFAULT` or `CHECK` constraints at all — audit columns (`CreatedDate`, etc.) are populated by the calling code, never by the table definition.
-- No inline `PRIMARY KEY`/`FOREIGN KEY`/`UNIQUE` in `CREATE TABLE` — added afterward via `ALTER TABLE ... ADD CONSTRAINT ... NOT ENFORCED` (see `warehouse/ddl/30_constraints/`), and only once every referenced table exists.
-- `IDENTITY` is a preview feature, `BIGINT`-only, and can't be added retroactively.
-- No `CREATE SEQUENCE`.
+- Use `VARCHAR` (UTF-8) and `DATETIME2(6)`. Do not use `NVARCHAR`,
+  `DATETIME`, `MONEY`, `DEFAULT`, `CHECK` or `SEQUENCE`.
+- There is no inline PK/FK/UNIQUE. They are added in `30_constraints/` via
+  `ALTER TABLE … NOT ENFORCED`, after all tables exist.
+- `IDENTITY` is preview, BIGINT-only and has no `IDENTITY_INSERT`.
 
-Deploy order: `00_schemas/` → `10_control/` → `20_security/` → `30_constraints/` (constraints last, since FKs need their target tables to already exist).
+Deploy order: `00_schemas` → `05_meta` → `10_control` → `20_security` →
+`30_constraints` → `security/rls` → `programmability` → `metadata`. This is
+handled by `migration_runner` (`WAREHOUSE` target).
 
-## Key strategy: IDENTITY vs GUID
+The audit database is full SQL Server T-SQL and uses enforced PK/FK,
+`DEFAULT`, `CHECK`, `IDENTITY` and indexes.
+
+## Key strategy
 
 | Tables | Key | Why |
 |---|---|---|
-| `IngestionConfig`, `AnonymizationRule`, `UserAccess` | `BIGINT IDENTITY(1,1)` | Low-concurrency, admin/CI-managed metadata — sequential, human-readable keys are appropriate. |
-| `PipelineRun`, `TableRun`, `ErrorLog`, `Quarantine` | `UNIQUEIDENTIFIER`, generated in Python (`uuid.uuid4()`) before insert | High-concurrency, append-heavy logging tables (many parallel table loads insert at once). The ID must be known *before* the row is written so it can be threaded into child rows (e.g. `TableRunID` passed to `end_table_run()`) without a round-trip identity lookup, and without depending on the preview `IDENTITY` feature for the tables where lineage integrity matters most. |
+| control.* config tables | Explicit `BIGINT` set by metadata scripts (id ranges in `warehouse/metadata/README.md`) | Metadata is promoted DEV → UAT → PROD, so ids must be identical everywhere. IDENTITY can't guarantee that, and has no IDENTITY_INSERT in Fabric DW. |
+| control.watermark | entity_id | One runtime row per entity |
+| control/audit `schema_migration_history` | `UNIQUEIDENTIFIER` from Python | Written before or while the ledger bootstraps |
+| audit.run / audit.entity_run | Caller-generated strings (`yyyyMMdd-HHmmss-XXXXXX`, `<run_id>-E<entity_id>`) | Known before any insert, so they can be threaded into landing paths, Bronze columns and child rows. entity_run_id is deterministic, so pipeline and notebook address the same row. |
+| audit.activity/error/validation/file | `BIGINT IDENTITY` | Append-only children; never referenced before insert |
 
-## Tracing hierarchy
+## Audit writer boundaries (`audit_manager.py`)
 
-```
-ExecutionID (correlation GUID; no dedicated table — carried on PipelineRun/ErrorLog,
-             sourced from the orchestrating Data Pipeline's own RunId, or minted
-             fresh by start_pipeline_run() when a notebook runs standalone)
-   └── PipelineRun [PipelineRunID]   one row per pipeline/notebook invocation
-          └── TableRun [TableRunID]  one row per table processed in that run
-                 ├── ErrorLog        0..n, may reference PipelineRunID and/or TableRunID
-                 └── Quarantine      0..n, references TableRunID
-```
-
-Multiple `TableRun` rows share one `PipelineRunID` when a pipeline fans out over `IngestionConfig` (e.g. a parallel `ForEach`) — this is safe under concurrency because each `TableRun` insert is an independent row.
-
-## `utils_logging.py` design
-
-**Connection**: `pyodbc`, authenticated with an Entra access token from `notebookutils.credentials.getToken("https://database.windows.net/.default")`, passed via the `SQL_COPT_SS_ACCESS_TOKEN` connection attribute. Fabric Warehouse tables aren't writable from Spark directly, and the SQL endpoint is Entra-only — this reuses the notebook's own run-as identity with no extra secret management. The connection string itself is always passed in by the caller (resolved from config), never hardcoded in the module.
-
-**Exception boundaries** (deliberately not uniform):
-
-| Function | On failure | Rationale |
+| Call | On failure | Rationale |
 |---|---|---|
-| `start_pipeline_run`, `start_table_run` | Fail fast — raises `ControlConnectionError` | If the opening row can't be written, the run is untracked. Proceeding silently would create an unaudited run, which is worse than aborting loudly — especially in a framework that also governs anonymization/PII handling. |
-| `end_pipeline_run`, `end_table_run`, `log_error` | Fail soft — never raises, returns `bool` | These are called from `except`/`finally` blocks around the caller's real business logic. If they raised, they could mask the original exception or leave a run stuck in `RUNNING` forever. On failure they fall back to writing a JSON line under `Files/_framework_fallback/` in the Lakehouse (via `notebookutils.fs`, independent of Warehouse reachability), then log at `CRITICAL` as a last resort. |
+| `start_run`, `start_entity_run`, `get_run_entities` | **Fail fast**: raise `AuditConnectionError` | An untracked run, or not knowing what was extracted, is worse than aborting loudly, especially in a framework that governs anonymisation. |
+| `update_entity_run`, `complete_entity_run`, `complete_run`, `log_activity`, `log_error`, `log_validation`, `log_file`, `previous_row_count` | **Fail soft**: return `False` (or None) | These run inside except/finally blocks around real work. Raising could mask the real exception or fail a Bronze load that succeeded. On failure they write JSON to `Files/_framework_fallback/audit/<kind>/` and log at `CRITICAL`. `audit_failure_is_critical = true` escalates to `AuditCriticalError` after the fallback write. |
 
-## Row-Level Security
+Other behaviour:
+- Writes go only through `audit.usp_*`, with named parameters. Pipelines use
+  the same procedures.
+- There is one pyodbc connection per thread, and a reconnect on failure.
+- Nothing written contains source values: messages are sanitised, and
+  validation results are counts only.
 
-- `security/rls/001_security_predicate_function.sql` — `SECURITY.fn_SecurityPredicate(@RegionKey, @CountryKey, @BusinessUnitKey)`, a schema-bound inline table-valued function that checks `EXISTS` against `SECURITY.UserAccess` for the calling user.
-- **`USER_NAME()` rather than `SESSION_CONTEXT`**: Fabric Warehouse SQL endpoint connections are per-user Entra pass-through — there's no trusted pooled middle tier that could `SET SESSION_CONTEXT` on behalf of an end user — so `USER_NAME()` reliably identifies the caller with no extra plumbing.
-- `security/rls/002_security_policy_template.sql` — the `CREATE SECURITY POLICY` statement is delivered as a commented template, since no fact/dimension tables exist yet in this repo. Once a table with `RegionKey`/`CountryKey`/`BusinessUnitKey` columns exists, uncomment and bind it; use the `ALTER SECURITY POLICY ... ADD FILTER PREDICATE` pattern for each additional table.
-- **NULL-as-wildcard**: a `NULL` on any `UserAccess` key column means that user sees all values on that dimension. This is a convention enforced by the predicate function's logic, not by the database — document it wherever `UserAccess` rows are maintained.
-- **Testing**: RLS is bypassed for workspace Admin/Member/Contributor roles. Always test connected *as* the target user.
+Connection: pyodbc plus `notebookutils.credentials.getToken(<audience>)` via
+`SQL_COPT_SS_ACCESS_TOKEN` (`fabric_connection.get_connection_notebookutils`).
+The default audience is `"pbi"`. It is configurable
+(`sql_token_audience`, `audit_sql_token_audience`), and the value for the
+audit DB is unverified live. Connection strings are always caller-supplied
+parameters.
 
-## Anonymization scope
+## Row-Level Security (unchanged)
 
-`CONTROL.AnonymizationRule` only defines *what* should be anonymized (source column, rule type, parameters, and a reference to the Key Vault secret holding the salt — never the raw salt value itself). It does not execute anything. The anonymization engine itself — reading active rules for a `SourceSystem`/`SourceTable`, resolving `SaltKeyVaultSecret`, and applying the hash/mask/tokenize/nullify/encrypt transform during Bronze → Silver — is out of scope for this framework and should be tracked as a separate follow-up module.
+- `security/rls/001_security_predicate_function.sql`:
+  `SECURITY.fn_SecurityPredicate(@RegionKey, @CountryKey, @BusinessUnitKey)`,
+  checking `SECURITY.UserAccess` for `USER_NAME()`. It uses `USER_NAME()`, not
+  `SESSION_CONTEXT`, because Fabric SQL endpoints are per-user Entra
+  pass-through.
+- `002_security_policy_template.sql` is unbound
+  (`-- MIGRATION_RUNNER: SKIP`) until Gold fact/dimension tables with those
+  keys exist.
+- NULL in a UserAccess key column is a wildcard for that dimension.
+- RLS is bypassed for workspace Admin/Member/Contributor, so always test
+  connected as the target user.
+
+## Anonymisation
+
+The rules are now **executed** by `notebooks/bronze/anonymisation_engine.py`
+as data enters Bronze. They are gated per environment by
+`framework_configuration.anonymisation_enabled`. See
+[bronze_framework/08_Anonymisation.md](bronze_framework/08_Anonymisation.md).
 
 ## Verification
 
-1. Deploy DDL in order via the Fabric SQL endpoint (one batch per script, no `GO`): `00_schemas/` → `10_control/` → `20_security/` → `30_constraints/` → `security/rls/001_security_predicate_function.sql`. Confirm via `INFORMATION_SCHEMA.TABLES`/`COLUMNS` and, after RLS, `sys.security_predicates`.
-2. Insert one sample row per `CONTROL` table through the full parent/child chain (`PipelineRun` → `TableRun` → `ErrorLog`/`Quarantine`) and confirm joins resolve. Insert 2+ `SECURITY.UserAccess` rows for different principals and confirm `fn_SecurityPredicate` filters as expected when queried as each principal.
-3. Run `pytest tests/framework/test_utils_logging.py` — fully mocked, no live Fabric connection required.
-4. Live `pyodbc`/`notebookutils` integration can only be exercised inside an actual Fabric notebook against a dev Warehouse; this has not been verified in this session since no Fabric connection is available here.
+1. `pytest -q`. It is fully mocked and needs no Fabric connection.
+2. Deploy via `SchemaMigration.DataPipeline` in Dev (audit DB, then the
+   Warehouse), then run
+   `python -m scripts.ci.verify_migration_state --target audit_db|warehouse`.
+3. Run `sql_database/audit/samples/900_sample_audit_records.sql` against DEV
+   only, and query the `audit.vw_*` views.
+4. **Not yet done:** none of the DDL, procs or views have been applied to a
+   live Warehouse or SQL Database.

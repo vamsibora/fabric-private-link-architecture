@@ -1,0 +1,131 @@
+# Deployment: deploy-dev -> promote-uat -> promote-prod (docs/cicd_pipeline.md).
+#
+# Every Fabric call goes through the service principal (OIDC federated
+# credential). Schema migrations run INSIDE Fabric (SchemaMigration pipeline
+# -> SchemaMigrationRunner notebook): the central audit SQL Database first,
+# then the Warehouse (control schema + metadata). GitHub Actions only runs
+# the read-only verify step against each database.
+#
+# promote-uat / promote-prod pause for the required reviewers configured on
+# the `uat` / `prod` GitHub Environments. No production target is ever
+# deployed without that approval.
+name: cicd-pipeline
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: cicd-pipeline
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -q
+
+  deploy-dev:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements-dev.txt
+      - name: Check ODBC Driver 18 (needed by pyodbc for the verify steps)
+        run: odbcinst -q -d | grep -q "ODBC Driver 18 for SQL Server"
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+      - name: Sync Dev workspace from git
+        run: python -m scripts.ci.fabric_git_sync --workspace-id "${{ vars.DEV_WORKSPACE_ID }}"
+      - name: Publish framework library to Dev environment
+        run: python -m scripts.ci.fabric_publish_environment_library --workspace-id "${{ vars.DEV_WORKSPACE_ID }}" --environment-id "${{ vars.DEV_ENVIRONMENT_ID }}"
+      - name: Run schema migrations in Dev (audit DB, then Warehouse)
+        run: python -m scripts.ci.fabric_run_item_job --workspace-id "${{ vars.DEV_WORKSPACE_ID }}" --item-id "${{ vars.DEV_PIPELINE_ITEM_ID }}" --target-environment DEV
+      - name: Verify audit DB migration state
+        env:
+          AUDIT_DB_CONNECTION_STRING: ${{ secrets.DEV_AUDIT_DB_CONNECTION_STRING }}
+        run: python -m scripts.ci.verify_migration_state --env dev --target audit_db
+      - name: Verify Warehouse migration state
+        env:
+          WAREHOUSE_CONNECTION_STRING: ${{ secrets.DEV_WAREHOUSE_CONNECTION_STRING }}
+        run: python -m scripts.ci.verify_migration_state --env dev --target warehouse
+
+  promote-uat:
+    needs: deploy-dev
+    runs-on: ubuntu-latest
+    environment: uat
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements-dev.txt
+      - name: Check ODBC Driver 18 (needed by pyodbc for the verify steps)
+        run: odbcinst -q -d | grep -q "ODBC Driver 18 for SQL Server"
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+      - name: Deploy Dev -> UAT (Fabric Deployment Pipeline)
+        run: python -m scripts.ci.fabric_deploy_pipeline_stage --pipeline-id "${{ vars.DEPLOYMENT_PIPELINE_ID }}" --source-stage-id "${{ vars.DEPLOYMENT_STAGE_DEV_ID }}" --target-stage-id "${{ vars.DEPLOYMENT_STAGE_UAT_ID }}"
+      - name: Publish framework library to UAT environment
+        run: python -m scripts.ci.fabric_publish_environment_library --workspace-id "${{ vars.UAT_WORKSPACE_ID }}" --environment-id "${{ vars.UAT_ENVIRONMENT_ID }}"
+      - name: Run schema migrations in UAT (audit DB, then Warehouse)
+        run: python -m scripts.ci.fabric_run_item_job --workspace-id "${{ vars.UAT_WORKSPACE_ID }}" --item-id "${{ vars.UAT_PIPELINE_ITEM_ID }}" --target-environment UAT
+      - name: Verify audit DB migration state
+        env:
+          AUDIT_DB_CONNECTION_STRING: ${{ secrets.UAT_AUDIT_DB_CONNECTION_STRING }}
+        run: python -m scripts.ci.verify_migration_state --env uat --target audit_db
+      - name: Verify Warehouse migration state
+        env:
+          WAREHOUSE_CONNECTION_STRING: ${{ secrets.UAT_WAREHOUSE_CONNECTION_STRING }}
+        run: python -m scripts.ci.verify_migration_state --env uat --target warehouse
+
+  promote-prod:
+    needs: promote-uat
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements-dev.txt
+      - name: Check ODBC Driver 18 (needed by pyodbc for the verify steps)
+        run: odbcinst -q -d | grep -q "ODBC Driver 18 for SQL Server"
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+      - name: Deploy UAT -> Prod (Fabric Deployment Pipeline)
+        run: python -m scripts.ci.fabric_deploy_pipeline_stage --pipeline-id "${{ vars.DEPLOYMENT_PIPELINE_ID }}" --source-stage-id "${{ vars.DEPLOYMENT_STAGE_UAT_ID }}" --target-stage-id "${{ vars.DEPLOYMENT_STAGE_PROD_ID }}"
+      - name: Publish framework library to Prod environment
+        run: python -m scripts.ci.fabric_publish_environment_library --workspace-id "${{ vars.PROD_WORKSPACE_ID }}" --environment-id "${{ vars.PROD_ENVIRONMENT_ID }}"
+      - name: Run schema migrations in Prod (audit DB, then Warehouse)
+        run: python -m scripts.ci.fabric_run_item_job --workspace-id "${{ vars.PROD_WORKSPACE_ID }}" --item-id "${{ vars.PROD_PIPELINE_ITEM_ID }}" --target-environment PROD
+      - name: Verify audit DB migration state
+        env:
+          AUDIT_DB_CONNECTION_STRING: ${{ secrets.PROD_AUDIT_DB_CONNECTION_STRING }}
+        run: python -m scripts.ci.verify_migration_state --env prod --target audit_db
+      - name: Verify Warehouse migration state
+        env:
+          WAREHOUSE_CONNECTION_STRING: ${{ secrets.PROD_WAREHOUSE_CONNECTION_STRING }}
+        run: python -m scripts.ci.verify_migration_state --env prod --target warehouse

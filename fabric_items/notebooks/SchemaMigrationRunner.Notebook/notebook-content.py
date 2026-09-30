@@ -1,61 +1,99 @@
-# Fabric Notebook — SchemaMigrationRunner
-#
-# DRAFT content -- see fabric_items/README.md. This is a thin wrapper only;
-# all real logic lives in the tested notebooks.framework.migration_runner
-# module, installed via this workspace's CicdFramework.Environment custom
-# library (see scripts/ci/fabric_publish_environment_library.py).
-#
-# Notebook parameters (set by the SchemaMigration.DataPipeline Notebook
-# activity that invokes this notebook):
-#   target_environment: str   -- "dev" | "uat" | "prod", for logging only
-#   connection_string: str    -- Warehouse SQL endpoint, resolved per stage
-#                                 via a Deployment Pipeline deployment rule,
-#                                 never hardcoded here
+# Fabric notebook source
 
-# PARAMETERS CELL
-target_environment = ""
-connection_string = ""
+# METADATA ********************
 
-# CODE CELL
+# META {
+# META   "kernel_info": {
+# META     "name": "synapse_pyspark"
+# META   },
+# META   "dependencies": {}
+# META }
+
+# MARKDOWN ********************
+
+# # SchemaMigrationRunner
+#
+# Thin wrapper around the tested `notebooks.framework.migration_runner`
+# (installed from the `CicdFramework.Environment` custom library, which also
+# bundles every migration script).
+#
+# Order matters:
+# 1. **Audit SQL Database** (`AUDIT_DB` target): `audit` schema, tables,
+#    indexes, stored procedures and monitoring views. It runs first so the
+#    Warehouse migration can itself be audited.
+# 2. **Warehouse** (`WAREHOUSE` target): `control` schema, `SECURITY`/RLS,
+#    `control.fn_active_entities` and the control metadata seed.
+#
+# CREATE-once scripts never re-run; repeatable scripts (procs, views,
+# functions, metadata) re-apply when their checksum changes.
+
+# PARAMETERS CELL ********************
+
+target_environment = "DEV"
+warehouse_connection_string = ""   # resolved per stage (deployment rule / Variable Library), never hard-coded
+audit_connection_string = ""       # resolved per stage (deployment rule / Variable Library), never hard-coded
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
 import importlib.resources
 from pathlib import Path
 
-from notebooks.framework import utils_logging as ul
+from notebooks.bronze.audit_manager import AuditManager
+from notebooks.bronze.error_manager import ErrorInfo, classify
+from notebooks.bronze.run_manager import RunContext
 from notebooks.framework import migration_runner as mr
 
-if not connection_string:
-    raise ValueError("connection_string parameter is required")
+if not warehouse_connection_string or not audit_connection_string:
+    raise ValueError("warehouse_connection_string and audit_connection_string parameters are required")
 
 bundled_repo_root = Path(importlib.resources.files("notebooks.framework")) / "_bundled_repo"
+applied_by = f"schema_migration:{target_environment}"
 
-pipeline_run_id = ul.start_pipeline_run(
-    connection_string,
-    pipeline_name="schema_migration",
-    source_system=target_environment,
+# 1. Audit database first -- nothing can be audited until it exists.
+audit_result = mr.run_migrations(
+    audit_connection_string, bundled_repo_root, applied_by=applied_by, target=mr.AUDIT_DB_TARGET,
 )
+print(f"AUDIT_DB: applied {len(audit_result.applied)}, already-applied {len(audit_result.already_applied)}, "
+      f"drift {len(audit_result.checksum_drift)}")
+
+# 2. Warehouse, audited as a run in the central audit database.
+context = RunContext.create(environment=target_environment, framework_name="SchemaMigration",
+                            trigger_type="DEPLOYMENT").with_notebook_context()
+audit = AuditManager(audit_connection_string, context)
+audit.start_run()
+
+
+def _drift_warning(message: str) -> None:
+    audit.log_error(ErrorInfo("CHECKSUM_DRIFT", message, False, "SCHEMA_MIGRATION", None))
+
+
 try:
     result = mr.run_migrations(
-        connection_string,
-        repo_root=bundled_repo_root,
-        applied_by=target_environment or "unknown",
-        pipeline_run_id=pipeline_run_id,
+        warehouse_connection_string, bundled_repo_root, applied_by=applied_by, run_id=context.run_id,
+        target=mr.WAREHOUSE_TARGET, on_warning=_drift_warning,
     )
-    ul.end_pipeline_run(
-        connection_string,
-        pipeline_run_id,
-        status="SUCCEEDED",
-        rows_processed=len(result.applied),
-    )
-    print(f"Applied {len(result.applied)}, already-applied {len(result.already_applied)}, "
+    audit.log_activity(None, "SCHEMA_MIGRATION_COMPLETED", "SUCCEEDED", activity_name="WAREHOUSE",
+                       rows_affected=len(result.applied),
+                       message=f"applied={len(result.applied)} already={len(result.already_applied)} "
+                               f"templates={len(result.skipped_templates)} drift={len(result.checksum_drift)}")
+    audit.complete_run("SUCCEEDED")
+    print(f"WAREHOUSE: applied {len(result.applied)}, already-applied {len(result.already_applied)}, "
           f"templates skipped {len(result.skipped_templates)}, checksum drift {len(result.checksum_drift)}")
 except Exception as ex:
-    ul.log_error(
-        connection_string,
-        f"schema_migration failed: {ex}",
-        severity="CRITICAL",
-        pipeline_run_id=pipeline_run_id,
-        source_stage="schema_migration",
-        exception=ex,
-    )
-    ul.end_pipeline_run(connection_string, pipeline_run_id, status="FAILED")
+    audit.log_error(classify(ex, "SCHEMA_MIGRATION"))
+    audit.complete_run("FAILED", message="warehouse schema migration failed")
     raise
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }

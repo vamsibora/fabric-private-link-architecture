@@ -2,14 +2,15 @@
 
 Two token-acquisition paths, one packing helper:
   - get_connection_notebookutils(): notebookutils.credentials.getToken() --
-    used by code running inside a real Fabric notebook (utils_logging.py,
-    migration_runner.py), reusing the notebook's own run-as identity.
+    used by code running inside a real Fabric notebook (bronze/audit_manager.py,
+    migration_runner.py, the Bronze framework), reusing the notebook's own
+    run-as identity.
   - get_connection_service_principal(): MSAL/Entra client-credentials (secret
     or federated OIDC assertion) -- used by scripts/ci/verify_migration_state.py,
     which runs in a GitHub Actions runner with no notebookutils available.
 
 Both return a plain pyodbc.Connection with autocommit enabled; callers are
-responsible for closing it (see utils_logging._cursor for the pattern).
+responsible for closing it (see bronze/audit_manager.py for the pattern).
 """
 
 import struct
@@ -21,6 +22,13 @@ import pyodbc
 # to pass an Entra access token in place of a username/password.
 _SQL_COPT_SS_ACCESS_TOKEN = 1256
 _TOKEN_AUDIENCE = "https://database.windows.net/.default"
+# Default notebookutils audience for Fabric SQL endpoints. The working Dev
+# reference notebook (ito_dp_fabric_dev/rio/nb_landing_bronze) connects to a
+# Warehouse with getToken("pbi"); the database.windows.net audience hit
+# internal 500s there. Callers can override per connection -- the value
+# comes from control.framework_configuration (sql_token_audience /
+# audit_sql_token_audience), never hard-coded at call sites.
+DEFAULT_NOTEBOOK_TOKEN_AUDIENCE = "pbi"
 
 
 def _pack_token(token: str) -> bytes:
@@ -48,16 +56,19 @@ def get_connection_with_token(connection_string: str, token: str) -> pyodbc.Conn
     return conn
 
 
-def get_connection_notebookutils(connection_string: str) -> pyodbc.Connection:
+def get_connection_notebookutils(connection_string: str, audience: Optional[str] = None) -> pyodbc.Connection:
     """Open a pyodbc connection using the notebook's own Entra identity.
 
     Only callable from inside a real Fabric notebook runtime (imports
     notebookutils lazily so this module can still be imported -- e.g. by
     scripts/ci/* -- in environments where notebookutils doesn't exist).
+
+    audience: token audience passed to notebookutils.credentials.getToken;
+    defaults to DEFAULT_NOTEBOOK_TOKEN_AUDIENCE.
     """
     import notebookutils  # Fabric-injected runtime module
 
-    token = notebookutils.credentials.getToken(_TOKEN_AUDIENCE)
+    token = notebookutils.credentials.getToken(audience or DEFAULT_NOTEBOOK_TOKEN_AUDIENCE)
     return get_connection_with_token(connection_string, token)
 
 

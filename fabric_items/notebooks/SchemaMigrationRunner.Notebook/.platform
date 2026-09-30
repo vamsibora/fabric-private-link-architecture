@@ -1,0 +1,11 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "Notebook",
+    "displayName": "SchemaMigrationRunner"
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "dbd9b8e2-a6e9-4f75-8ae0-5ba759b5d7a8"
+  }
+}

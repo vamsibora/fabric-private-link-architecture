@@ -24,6 +24,25 @@ def test_stage_bundled_sql_copies_ddl_and_rls(tmp_path):
     assert (bundle_dir / "security/rls/001_pred.sql").read_text() == "-- predicate"
 
 
+def test_stage_bundled_sql_copies_every_migration_root(tmp_path):
+    for folder in lib.BUNDLED_FOLDERS:
+        _write(tmp_path / folder / "x" / "001.sql", folder)
+
+    bundle_dir = lib.stage_bundled_sql(tmp_path)
+
+    for folder in lib.BUNDLED_FOLDERS:
+        assert (bundle_dir / folder / "x" / "001.sql").read_text() == folder
+
+
+def test_stage_bundled_sql_skips_missing_roots(tmp_path):
+    _write(tmp_path / "warehouse/ddl/00_schemas/001_a.sql", "x")
+
+    bundle_dir = lib.stage_bundled_sql(tmp_path)
+
+    assert (bundle_dir / "warehouse/ddl/00_schemas/001_a.sql").exists()
+    assert not (bundle_dir / "sql_database").exists()
+
+
 def test_stage_bundled_sql_overwrites_stale_bundle(tmp_path):
     _write(tmp_path / "warehouse/ddl/00_schemas/001_a.sql", "v1")
     _write(tmp_path / "security/rls/001_pred.sql", "v1")

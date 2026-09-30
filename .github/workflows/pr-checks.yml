@@ -1,0 +1,45 @@
+# PR gate: fast, Fabric-independent. No secrets, no Fabric access.
+# See docs/cicd_pipeline.md.
+name: pr-checks
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Unit, contract and item-structure tests
+        run: pytest -q
+      - name: Build the framework wheel (packaging check, no upload)
+        run: python -c "from scripts.ci.fabric_publish_environment_library import build_wheel; print(build_wheel())"
+
+  spark-tests:
+    # Spark + Delta end-to-end scenarios (tests/bronze/test_spark_end_to_end.py).
+    # Informational until they have been proven green once: they were written
+    # without a local Java runtime.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt "pyspark==3.5.*" "delta-spark==3.2.*"
+      - name: Spark end-to-end tests
+        run: pytest -m spark -v

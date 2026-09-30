@@ -3,3 +3,5 @@ pytest>=8.0
 build>=1.2
 msal>=1.28
 requests>=2.31
+# Optional, for `pytest -m spark` (also needs Java 11/17):
+#   pip install "pyspark==3.5.*" "delta-spark==3.2.*"

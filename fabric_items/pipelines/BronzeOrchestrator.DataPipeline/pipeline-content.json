@@ -1,0 +1,611 @@
+{
+  "properties": {
+    "description": "Bronze framework run: start audit run -> Lookup control.fn_active_entities -> ForEach entity (bounded batchCount) -> extract via the source-type child pipeline -> BronzeFramework notebook processes every EXTRACTED entity with max_parallel_entities threads and completes the audit run. Connection/artifact ids 00000000-...-a00N/b00N are placeholders -- see fabric_items/README.md.",
+    "activities": [
+      {
+        "name": "SetRunId",
+        "type": "SetVariable",
+        "dependsOn": [],
+        "policy": {
+          "secureOutput": false,
+          "secureInput": false
+        },
+        "typeProperties": {
+          "variableName": "run_id",
+          "value": {
+            "value": "@concat(formatDateTime(pipeline().TriggerTime,'yyyyMMdd-HHmmss'),'-',toUpper(substring(replace(pipeline().RunId,'-',''),0,6)))",
+            "type": "Expression"
+          }
+        }
+      },
+      {
+        "name": "SetRunTimestamp",
+        "type": "SetVariable",
+        "dependsOn": [
+          {
+            "activity": "SetRunId",
+            "dependencyConditions": [
+              "Succeeded"
+            ]
+          }
+        ],
+        "policy": {
+          "secureOutput": false,
+          "secureInput": false
+        },
+        "typeProperties": {
+          "variableName": "run_timestamp",
+          "value": {
+            "value": "@formatDateTime(pipeline().TriggerTime,'yyyyMMddHHmmss')",
+            "type": "Expression"
+          }
+        }
+      },
+      {
+        "name": "AuditStartRun",
+        "type": "SqlServerStoredProcedure",
+        "dependsOn": [
+          {
+            "activity": "SetRunTimestamp",
+            "dependencyConditions": [
+              "Succeeded"
+            ]
+          }
+        ],
+        "policy": {
+          "timeout": "0.00:10:00",
+          "retry": 2,
+          "retryIntervalInSeconds": 30,
+          "secureOutput": false,
+          "secureInput": false
+        },
+        "typeProperties": {
+          "storedProcedureName": "[audit].[usp_start_run]",
+          "storedProcedureParameters": {
+            "run_id": {
+              "value": {
+                "value": "@variables('run_id')",
+                "type": "Expression"
+              },
+              "type": "String"
+            },
+            "framework_name": {
+              "value": "BronzeFramework",
+              "type": "String"
+            },
+            "environment": {
+              "value": {
+                "value": "@pipeline().parameters.environment",
+                "type": "Expression"
+              },
+              "type": "String"
+            },
+            "workspace_id": {
+              "value": {
+                "value": "@pipeline().DataFactory",
+                "type": "Expression"
+              },
+              "type": "String"
+            },
+            "pipeline_name": {
+              "value": {
+                "value": "@pipeline().Pipeline",
+                "type": "Expression"
+              },
+              "type": "String"
+            },
+            "pipeline_run_id": {
+              "value": {
+                "value": "@pipeline().RunId",
+                "type": "Expression"
+              },
+              "type": "String"
+            },
+            "trigger_type": {
+              "value": {
+                "value": "@pipeline().parameters.trigger_type",
+                "type": "Expression"
+              },
+              "type": "String"
+            },
+            "trigger_name": {
+              "value": {
+                "value": "@pipeline().TriggerName",
+                "type": "Expression"
+              },
+              "type": "String"
+            },
+            "run_timestamp": {
+              "value": {
+                "value": "@variables('run_timestamp')",
+                "type": "Expression"
+              },
+              "type": "String"
+            },
+            "entity_group": {
+              "value": {
+                "value": "@if(empty(pipeline().parameters.entity_group), null, pipeline().parameters.entity_group)",
+                "type": "Expression"
+              },
+              "type": "String"
+            }
+          }
+        },
+        "externalReferences": {
+          "connection": "00000000-0000-0000-0000-00000000a003"
+        }
+      },
+      {
+        "name": "LookupActiveEntities",
+        "type": "Lookup",
+        "dependsOn": [
+          {
+            "activity": "AuditStartRun",
+            "dependencyConditions": [
+              "Succeeded"
+            ]
+          }
+        ],
+        "policy": {
+          "timeout": "0.00:10:00",
+          "retry": 2,
+          "retryIntervalInSeconds": 30,
+          "secureOutput": false,
+          "secureInput": false
+        },
+        "typeProperties": {
+          "source": {
+            "type": "DataWarehouseSource",
+            "sqlReaderQuery": {
+              "value": "@concat('SELECT * FROM [control].[fn_active_entities](''', pipeline().parameters.environment, ''', ', if(empty(pipeline().parameters.entity_group), 'NULL', concat('''', replace(pipeline().parameters.entity_group, '''', ''''''), '''')), ') ORDER BY processing_priority, entity_id')",
+              "type": "Expression"
+            },
+            "queryTimeout": "00:10:00",
+            "partitionOption": "None"
+          },
+          "firstRowOnly": false,
+          "datasetSettings": {
+            "annotations": [],
+            "linkedService": {
+              "name": "wh_control",
+              "properties": {
+                "annotations": [],
+                "type": "DataWarehouse",
+                "typeProperties": {
+                  "endpoint": "<control-warehouse-sql-endpoint>",
+                  "artifactId": "00000000-0000-0000-0000-00000000b001",
+                  "workspaceId": "00000000-0000-0000-0000-000000000000"
+                }
+              }
+            },
+            "type": "DataWarehouseTable",
+            "schema": [],
+            "typeProperties": {}
+          }
+        }
+      },
+      {
+        "name": "ForEachEntity",
+        "type": "ForEach",
+        "dependsOn": [
+          {
+            "activity": "LookupActiveEntities",
+            "dependencyConditions": [
+              "Succeeded"
+            ]
+          }
+        ],
+        "typeProperties": {
+          "items": {
+            "value": "@activity('LookupActiveEntities').output.value",
+            "type": "Expression"
+          },
+          "isSequential": false,
+          "batchCount": 20,
+          "activities": [
+            {
+              "name": "SwitchSourceType",
+              "type": "Switch",
+              "dependsOn": [],
+              "typeProperties": {
+                "on": {
+                  "value": "@toUpper(item().source_type)",
+                  "type": "Expression"
+                },
+                "cases": [
+                  {
+                    "value": "SQLSERVER",
+                    "activities": [
+                      {
+                        "name": "ExtractSqlServerEntity",
+                        "type": "InvokePipeline",
+                        "dependsOn": [],
+                        "policy": {
+                          "timeout": "0.12:00:00",
+                          "retry": 0,
+                          "retryIntervalInSeconds": 30,
+                          "secureOutput": false,
+                          "secureInput": false
+                        },
+                        "typeProperties": {
+                          "waitOnCompletion": true,
+                          "operationType": "InvokeFabricPipeline",
+                          "pipelineId": "211a7914-c896-4b51-8698-b378975a0bd7",
+                          "workspaceId": "00000000-0000-0000-0000-000000000000",
+                          "parameters": {
+                            "run_id": {
+                              "value": "@variables('run_id')",
+                              "type": "Expression"
+                            },
+                            "entity_run_id": {
+                              "value": "@concat(variables('run_id'), '-E', string(item().entity_id))",
+                              "type": "Expression"
+                            },
+                            "run_timestamp": {
+                              "value": "@variables('run_timestamp')",
+                              "type": "Expression"
+                            },
+                            "environment": {
+                              "value": "@pipeline().parameters.environment",
+                              "type": "Expression"
+                            },
+                            "entity_id": {
+                              "value": "@item().entity_id",
+                              "type": "Expression"
+                            },
+                            "source_system": {
+                              "value": "@item().source_system_name",
+                              "type": "Expression"
+                            },
+                            "source_schema": {
+                              "value": "@coalesce(item().source_schema, '')",
+                              "type": "Expression"
+                            },
+                            "source_table": {
+                              "value": "@item().source_table",
+                              "type": "Expression"
+                            },
+                            "target_schema": {
+                              "value": "@item().target_schema",
+                              "type": "Expression"
+                            },
+                            "target_table": {
+                              "value": "@item().target_table",
+                              "type": "Expression"
+                            },
+                            "load_type": {
+                              "value": "@item().load_type",
+                              "type": "Expression"
+                            },
+                            "landing_enabled": {
+                              "value": "@item().landing_enabled",
+                              "type": "Expression"
+                            },
+                            "landing_container": {
+                              "value": "@item().landing_container",
+                              "type": "Expression"
+                            },
+                            "landing_folder": {
+                              "value": "@item().landing_folder",
+                              "type": "Expression"
+                            },
+                            "source_database": {
+                              "value": "@item().source_database",
+                              "type": "Expression"
+                            },
+                            "source_query": {
+                              "value": "@item().source_query",
+                              "type": "Expression"
+                            },
+                            "staging_schema": {
+                              "value": "@item().staging_schema",
+                              "type": "Expression"
+                            },
+                            "staging_table": {
+                              "value": "@item().staging_table",
+                              "type": "Expression"
+                            },
+                            "watermark_before": {
+                              "value": "@coalesce(item().last_successful_watermark, '')",
+                              "type": "Expression"
+                            },
+                            "parent_pipeline_run_id": {
+                              "value": "@pipeline().RunId",
+                              "type": "Expression"
+                            }
+                          }
+                        },
+                        "externalReferences": {
+                          "connection": "00000000-0000-0000-0000-00000000a004"
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "defaultActivities": [
+                  {
+                    "name": "AuditUnsupportedSource",
+                    "type": "SqlServerStoredProcedure",
+                    "dependsOn": [],
+                    "policy": {
+                      "timeout": "0.00:10:00",
+                      "retry": 2,
+                      "retryIntervalInSeconds": 30,
+                      "secureOutput": false,
+                      "secureInput": false
+                    },
+                    "typeProperties": {
+                      "storedProcedureName": "[audit].[usp_log_error]",
+                      "storedProcedureParameters": {
+                        "run_id": {
+                          "value": {
+                            "value": "@variables('run_id')",
+                            "type": "Expression"
+                          },
+                          "type": "String"
+                        },
+                        "error_stage": {
+                          "value": "EXTRACT",
+                          "type": "String"
+                        },
+                        "error_code": {
+                          "value": "UNSUPPORTED_SOURCE_TYPE",
+                          "type": "String"
+                        },
+                        "error_message": {
+                          "value": {
+                            "value": "@concat('No extract pipeline for source_type ', item().source_type, ' (entity ', string(item().entity_id), ')')",
+                            "type": "Expression"
+                          },
+                          "type": "String"
+                        },
+                        "source_system": {
+                          "value": {
+                            "value": "@item().source_system_name",
+                            "type": "Expression"
+                          },
+                          "type": "String"
+                        },
+                        "source_table": {
+                          "value": {
+                            "value": "@item().source_table",
+                            "type": "Expression"
+                          },
+                          "type": "String"
+                        },
+                        "is_retryable": {
+                          "value": false,
+                          "type": "Boolean"
+                        }
+                      }
+                    },
+                    "externalReferences": {
+                      "connection": "00000000-0000-0000-0000-00000000a003"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "name": "RunBronzeFramework",
+        "type": "TridentNotebook",
+        "dependsOn": [
+          {
+            "activity": "ForEachEntity",
+            "dependencyConditions": [
+              "Completed"
+            ]
+          }
+        ],
+        "policy": {
+          "timeout": "0.12:00:00",
+          "retry": 0,
+          "retryIntervalInSeconds": 30,
+          "secureOutput": false,
+          "secureInput": false
+        },
+        "typeProperties": {
+          "notebookId": "b31988df-54d5-41a3-b708-a342193ade0a",
+          "workspaceId": "00000000-0000-0000-0000-000000000000",
+          "parameters": {
+            "environment": {
+              "value": {
+                "value": "@pipeline().parameters.environment",
+                "type": "Expression"
+              },
+              "type": "string"
+            },
+            "warehouse_connection_string": {
+              "value": {
+                "value": "@pipeline().parameters.warehouse_connection_string",
+                "type": "Expression"
+              },
+              "type": "string"
+            },
+            "audit_connection_string": {
+              "value": {
+                "value": "@pipeline().parameters.audit_connection_string",
+                "type": "Expression"
+              },
+              "type": "string"
+            },
+            "key_vault_uri": {
+              "value": {
+                "value": "@pipeline().parameters.key_vault_uri",
+                "type": "Expression"
+              },
+              "type": "string"
+            },
+            "run_id": {
+              "value": {
+                "value": "@variables('run_id')",
+                "type": "Expression"
+              },
+              "type": "string"
+            },
+            "run_timestamp": {
+              "value": {
+                "value": "@variables('run_timestamp')",
+                "type": "Expression"
+              },
+              "type": "string"
+            },
+            "pipeline_name": {
+              "value": {
+                "value": "@pipeline().Pipeline",
+                "type": "Expression"
+              },
+              "type": "string"
+            },
+            "pipeline_run_id": {
+              "value": {
+                "value": "@pipeline().RunId",
+                "type": "Expression"
+              },
+              "type": "string"
+            },
+            "trigger_type": {
+              "value": {
+                "value": "@pipeline().parameters.trigger_type",
+                "type": "Expression"
+              },
+              "type": "string"
+            },
+            "entity_group": {
+              "value": {
+                "value": "@pipeline().parameters.entity_group",
+                "type": "Expression"
+              },
+              "type": "string"
+            },
+            "mode": {
+              "value": "PIPELINE",
+              "type": "string"
+            }
+          }
+        }
+      },
+      {
+        "name": "AuditRunFailed",
+        "type": "SqlServerStoredProcedure",
+        "dependsOn": [
+          {
+            "activity": "RunBronzeFramework",
+            "dependencyConditions": [
+              "Failed"
+            ]
+          }
+        ],
+        "policy": {
+          "timeout": "0.00:10:00",
+          "retry": 2,
+          "retryIntervalInSeconds": 30,
+          "secureOutput": false,
+          "secureInput": false
+        },
+        "typeProperties": {
+          "storedProcedureName": "[audit].[usp_complete_run]",
+          "storedProcedureParameters": {
+            "run_id": {
+              "value": {
+                "value": "@variables('run_id')",
+                "type": "Expression"
+              },
+              "type": "String"
+            },
+            "status": {
+              "value": "FAILED",
+              "type": "String"
+            },
+            "message": {
+              "value": "Pipeline failed before/while the framework completed the run; see audit.error and pipeline run history",
+              "type": "String"
+            }
+          }
+        },
+        "externalReferences": {
+          "connection": "00000000-0000-0000-0000-00000000a003"
+        }
+      },
+      {
+        "name": "AuditRunFailedBeforeProcessing",
+        "type": "SqlServerStoredProcedure",
+        "dependsOn": [
+          {
+            "activity": "LookupActiveEntities",
+            "dependencyConditions": [
+              "Failed"
+            ]
+          }
+        ],
+        "policy": {
+          "timeout": "0.00:10:00",
+          "retry": 2,
+          "retryIntervalInSeconds": 30,
+          "secureOutput": false,
+          "secureInput": false
+        },
+        "typeProperties": {
+          "storedProcedureName": "[audit].[usp_complete_run]",
+          "storedProcedureParameters": {
+            "run_id": {
+              "value": {
+                "value": "@variables('run_id')",
+                "type": "Expression"
+              },
+              "type": "String"
+            },
+            "status": {
+              "value": "FAILED",
+              "type": "String"
+            },
+            "message": {
+              "value": "Entity lookup failed; no entity was processed",
+              "type": "String"
+            }
+          }
+        },
+        "externalReferences": {
+          "connection": "00000000-0000-0000-0000-00000000a003"
+        }
+      }
+    ],
+    "parameters": {
+      "environment": {
+        "type": "string",
+        "defaultValue": "DEV"
+      },
+      "entity_group": {
+        "type": "string",
+        "defaultValue": ""
+      },
+      "trigger_type": {
+        "type": "string",
+        "defaultValue": "SCHEDULED"
+      },
+      "warehouse_connection_string": {
+        "type": "string",
+        "defaultValue": ""
+      },
+      "audit_connection_string": {
+        "type": "string",
+        "defaultValue": ""
+      },
+      "key_vault_uri": {
+        "type": "string",
+        "defaultValue": ""
+      }
+    },
+    "variables": {
+      "run_id": {
+        "type": "String"
+      },
+      "run_timestamp": {
+        "type": "String"
+      }
+    }
+  }
+}

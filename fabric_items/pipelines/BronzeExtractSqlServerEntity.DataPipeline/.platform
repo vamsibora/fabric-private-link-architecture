@@ -1,0 +1,11 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "DataPipeline",
+    "displayName": "BronzeExtractSqlServerEntity"
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "211a7914-c896-4b51-8698-b378975a0bd7"
+  }
+}

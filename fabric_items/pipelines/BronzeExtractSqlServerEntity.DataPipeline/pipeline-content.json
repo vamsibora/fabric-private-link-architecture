@@ -1,0 +1,1209 @@
+{
+  "properties": {
+    "description": "Extracts ONE SQL Server entity for a Bronze framework run. landing_enabled = true: Copy -> Storage Account JSON <container>/<source_system>/<table>/<table>_<yyyyMMddHHmmss>.json (never overwritten). landing_enabled = false: Copy -> Bronze Lakehouse staging table (table action Overwrite = truncate + load) stamped with _staging_run_id. Audits every step in the central audit SQL Database. Pipelines orchestrate; the BronzeFramework notebook processes. Connection ids 00000000-...-a00N are placeholders -- see fabric_items/README.md.",
+    "activities": [
+      {
+        "name": "AuditStartEntityRun",
+        "type": "SqlServerStoredProcedure",
+        "dependsOn": [],
+        "policy": {
+          "timeout": "0.00:10:00",
+          "retry": 2,
+          "retryIntervalInSeconds": 30,
+          "secureOutput": false,
+          "secureInput": false
+        },
+        "typeProperties": {
+          "storedProcedureName": "[audit].[usp_start_entity_run]",
+          "storedProcedureParameters": {
+            "entity_run_id": {
+              "value": {
+                "value": "@pipeline().parameters.entity_run_id",
+                "type": "Expression"
+              },
+              "type": "String"
+            },
+            "run_id": {
+              "value": {
+                "value": "@pipeline().parameters.run_id",
+                "type": "Expression"
+              },
+              "type": "String"
+            },
+            "entity_id": {
+              "value": {
+                "value": "@pipeline().parameters.entity_id",
+                "type": "Expression"
+              },
+              "type": "Int64"
+            },
+            "source_system": {
+              "value": {
+                "value": "@pipeline().parameters.source_system",
+                "type": "Expression"
+              },
+              "type": "String"
+            },
+            "source_schema": {
+              "value": {
+                "value": "@pipeline().parameters.source_schema",
+                "type": "Expression"
+              },
+              "type": "String"
+            },
+            "source_table": {
+              "value": {
+                "value": "@pipeline().parameters.source_table",
+                "type": "Expression"
+              },
+              "type": "String"
+            },
+            "target_schema": {
+              "value": {
+                "value": "@pipeline().parameters.target_schema",
+                "type": "Expression"
+              },
+              "type": "String"
+            },
+            "target_table": {
+              "value": {
+                "value": "@pipeline().parameters.target_table",
+                "type": "Expression"
+              },
+              "type": "String"
+            },
+            "load_type": {
+              "value": {
+                "value": "@pipeline().parameters.load_type",
+                "type": "Expression"
+              },
+              "type": "String"
+            },
+            "landing_enabled": {
+              "value": {
+                "value": "@pipeline().parameters.landing_enabled",
+                "type": "Expression"
+              },
+              "type": "Boolean"
+            },
+            "watermark_before": {
+              "value": {
+                "value": "@if(empty(pipeline().parameters.watermark_before), null, pipeline().parameters.watermark_before)",
+                "type": "Expression"
+              },
+              "type": "String"
+            },
+            "pipeline_run_id": {
+              "value": {
+                "value": "@pipeline().RunId",
+                "type": "Expression"
+              },
+              "type": "String"
+            },
+            "status": {
+              "value": "EXTRACTING",
+              "type": "String"
+            }
+          }
+        },
+        "externalReferences": {
+          "connection": "00000000-0000-0000-0000-00000000a003"
+        }
+      },
+      {
+        "name": "IfLandingEnabled",
+        "type": "IfCondition",
+        "dependsOn": [
+          {
+            "activity": "AuditStartEntityRun",
+            "dependencyConditions": [
+              "Succeeded"
+            ]
+          }
+        ],
+        "typeProperties": {
+          "expression": {
+            "value": "@bool(pipeline().parameters.landing_enabled)",
+            "type": "Expression"
+          },
+          "ifTrueActivities": [
+            {
+              "name": "CheckLandingFileExists",
+              "type": "GetMetadata",
+              "dependsOn": [],
+              "policy": {
+                "timeout": "0.00:10:00",
+                "retry": 1,
+                "retryIntervalInSeconds": 30,
+                "secureOutput": false,
+                "secureInput": false
+              },
+              "typeProperties": {
+                "fieldList": [
+                  "exists"
+                ],
+                "datasetSettings": {
+                  "annotations": [],
+                  "type": "Json",
+                  "typeProperties": {
+                    "location": {
+                      "type": "AzureBlobFSLocation",
+                      "fileName": {
+                        "value": "@concat(pipeline().parameters.source_table,'_',pipeline().parameters.run_timestamp,'.json')",
+                        "type": "Expression"
+                      },
+                      "folderPath": {
+                        "value": "@pipeline().parameters.landing_folder",
+                        "type": "Expression"
+                      },
+                      "fileSystem": {
+                        "value": "@pipeline().parameters.landing_container",
+                        "type": "Expression"
+                      }
+                    }
+                  },
+                  "schema": {},
+                  "externalReferences": {
+                    "connection": "00000000-0000-0000-0000-00000000a002"
+                  }
+                },
+                "storeSettings": {
+                  "type": "AzureBlobFSReadSettings",
+                  "recursive": false,
+                  "enablePartitionDiscovery": false
+                },
+                "formatSettings": {
+                  "type": "JsonReadSettings"
+                }
+              }
+            },
+            {
+              "name": "IfLandingFileExists",
+              "type": "IfCondition",
+              "dependsOn": [
+                {
+                  "activity": "CheckLandingFileExists",
+                  "dependencyConditions": [
+                    "Succeeded"
+                  ]
+                }
+              ],
+              "typeProperties": {
+                "expression": {
+                  "value": "@activity('CheckLandingFileExists').output.exists",
+                  "type": "Expression"
+                },
+                "ifTrueActivities": [
+                  {
+                    "name": "FailLandingFileExists",
+                    "type": "Fail",
+                    "dependsOn": [],
+                    "typeProperties": {
+                      "message": {
+                        "value": "@concat('Landing file already exists, refusing to overwrite: ', concat(pipeline().parameters.landing_folder,'/',pipeline().parameters.source_table,'_',pipeline().parameters.run_timestamp,'.json'))",
+                        "type": "Expression"
+                      },
+                      "errorCode": "LANDING_FILE_EXISTS"
+                    }
+                  }
+                ],
+                "ifFalseActivities": []
+              }
+            },
+            {
+              "name": "CopyToLanding",
+              "type": "Copy",
+              "dependsOn": [
+                {
+                  "activity": "IfLandingFileExists",
+                  "dependencyConditions": [
+                    "Succeeded"
+                  ]
+                }
+              ],
+              "policy": {
+                "timeout": "0.12:00:00",
+                "retry": 2,
+                "retryIntervalInSeconds": 60,
+                "secureOutput": false,
+                "secureInput": false
+              },
+              "typeProperties": {
+                "source": {
+                  "type": "SqlServerSource",
+                  "sqlReaderQuery": {
+                    "value": "@pipeline().parameters.source_query",
+                    "type": "Expression"
+                  },
+                  "queryTimeout": "02:00:00",
+                  "partitionOption": "None",
+                  "datasetSettings": {
+                    "annotations": [],
+                    "type": "SqlServerTable",
+                    "schema": [],
+                    "typeProperties": {
+                      "database": {
+                        "value": "@pipeline().parameters.source_database",
+                        "type": "Expression"
+                      }
+                    },
+                    "externalReferences": {
+                      "connection": "00000000-0000-0000-0000-00000000a001"
+                    }
+                  }
+                },
+                "sink": {
+                  "type": "JsonSink",
+                  "storeSettings": {
+                    "type": "AzureBlobFSWriteSettings"
+                  },
+                  "formatSettings": {
+                    "type": "JsonWriteSettings",
+                    "filePattern": "setOfObjects"
+                  },
+                  "datasetSettings": {
+                    "annotations": [],
+                    "type": "Json",
+                    "typeProperties": {
+                      "location": {
+                        "type": "AzureBlobFSLocation",
+                        "fileName": {
+                          "value": "@concat(pipeline().parameters.source_table,'_',pipeline().parameters.run_timestamp,'.json')",
+                          "type": "Expression"
+                        },
+                        "folderPath": {
+                          "value": "@pipeline().parameters.landing_folder",
+                          "type": "Expression"
+                        },
+                        "fileSystem": {
+                          "value": "@pipeline().parameters.landing_container",
+                          "type": "Expression"
+                        }
+                      }
+                    },
+                    "schema": {},
+                    "externalReferences": {
+                      "connection": "00000000-0000-0000-0000-00000000a002"
+                    }
+                  }
+                },
+                "enableStaging": false,
+                "translator": {
+                  "type": "TabularTranslator",
+                  "typeConversion": true,
+                  "typeConversionSettings": {
+                    "allowDataTruncation": false,
+                    "treatBooleanAsNumber": false
+                  }
+                }
+              }
+            },
+            {
+              "name": "AuditLandingFile",
+              "type": "SqlServerStoredProcedure",
+              "dependsOn": [
+                {
+                  "activity": "CopyToLanding",
+                  "dependencyConditions": [
+                    "Succeeded"
+                  ]
+                }
+              ],
+              "policy": {
+                "timeout": "0.00:10:00",
+                "retry": 2,
+                "retryIntervalInSeconds": 30,
+                "secureOutput": false,
+                "secureInput": false
+              },
+              "typeProperties": {
+                "storedProcedureName": "[audit].[usp_log_file]",
+                "storedProcedureParameters": {
+                  "run_id": {
+                    "value": {
+                      "value": "@pipeline().parameters.run_id",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "entity_run_id": {
+                    "value": {
+                      "value": "@pipeline().parameters.entity_run_id",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "entity_id": {
+                    "value": {
+                      "value": "@pipeline().parameters.entity_id",
+                      "type": "Expression"
+                    },
+                    "type": "Int64"
+                  },
+                  "source_system": {
+                    "value": {
+                      "value": "@pipeline().parameters.source_system",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "source_table": {
+                    "value": {
+                      "value": "@pipeline().parameters.source_table",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "file_container": {
+                    "value": {
+                      "value": "@pipeline().parameters.landing_container",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "file_path": {
+                    "value": {
+                      "value": "@concat(pipeline().parameters.landing_folder,'/',pipeline().parameters.source_table,'_',pipeline().parameters.run_timestamp,'.json')",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "file_name": {
+                    "value": {
+                      "value": "@concat(pipeline().parameters.source_table,'_',pipeline().parameters.run_timestamp,'.json')",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "file_size_bytes": {
+                    "value": {
+                      "value": "@activity('CopyToLanding').output.dataWritten",
+                      "type": "Expression"
+                    },
+                    "type": "Int64"
+                  },
+                  "row_count": {
+                    "value": {
+                      "value": "@activity('CopyToLanding').output.rowsCopied",
+                      "type": "Expression"
+                    },
+                    "type": "Int64"
+                  },
+                  "status": {
+                    "value": "CREATED",
+                    "type": "String"
+                  }
+                }
+              },
+              "externalReferences": {
+                "connection": "00000000-0000-0000-0000-00000000a003"
+              }
+            },
+            {
+              "name": "AuditLandingCopyActivity",
+              "type": "SqlServerStoredProcedure",
+              "dependsOn": [
+                {
+                  "activity": "CopyToLanding",
+                  "dependencyConditions": [
+                    "Succeeded"
+                  ]
+                }
+              ],
+              "policy": {
+                "timeout": "0.00:10:00",
+                "retry": 2,
+                "retryIntervalInSeconds": 30,
+                "secureOutput": false,
+                "secureInput": false
+              },
+              "typeProperties": {
+                "storedProcedureName": "[audit].[usp_log_activity]",
+                "storedProcedureParameters": {
+                  "run_id": {
+                    "value": {
+                      "value": "@pipeline().parameters.run_id",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "entity_run_id": {
+                    "value": {
+                      "value": "@pipeline().parameters.entity_run_id",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "activity_type": {
+                    "value": "COPY_COMPLETED",
+                    "type": "String"
+                  },
+                  "activity_name": {
+                    "value": "CopyToLanding",
+                    "type": "String"
+                  },
+                  "status": {
+                    "value": "SUCCEEDED",
+                    "type": "String"
+                  },
+                  "rows_affected": {
+                    "value": {
+                      "value": "@activity('CopyToLanding').output.rowsCopied",
+                      "type": "Expression"
+                    },
+                    "type": "Int64"
+                  },
+                  "activity_source": {
+                    "value": "PIPELINE",
+                    "type": "String"
+                  }
+                }
+              },
+              "externalReferences": {
+                "connection": "00000000-0000-0000-0000-00000000a003"
+              }
+            },
+            {
+              "name": "AuditLandingExtracted",
+              "type": "SqlServerStoredProcedure",
+              "dependsOn": [
+                {
+                  "activity": "AuditLandingFile",
+                  "dependencyConditions": [
+                    "Succeeded"
+                  ]
+                }
+              ],
+              "policy": {
+                "timeout": "0.00:10:00",
+                "retry": 2,
+                "retryIntervalInSeconds": 30,
+                "secureOutput": false,
+                "secureInput": false
+              },
+              "typeProperties": {
+                "storedProcedureName": "[audit].[usp_update_entity_run]",
+                "storedProcedureParameters": {
+                  "entity_run_id": {
+                    "value": {
+                      "value": "@pipeline().parameters.entity_run_id",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "status": {
+                    "value": "EXTRACTED",
+                    "type": "String"
+                  },
+                  "landing_path": {
+                    "value": {
+                      "value": "@concat(pipeline().parameters.landing_folder,'/',pipeline().parameters.source_table,'_',pipeline().parameters.run_timestamp,'.json')",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "source_row_count": {
+                    "value": {
+                      "value": "@activity('CopyToLanding').output.rowsCopied",
+                      "type": "Expression"
+                    },
+                    "type": "Int64"
+                  }
+                }
+              },
+              "externalReferences": {
+                "connection": "00000000-0000-0000-0000-00000000a003"
+              }
+            },
+            {
+              "name": "AuditLandingFileExistsError",
+              "type": "SqlServerStoredProcedure",
+              "dependsOn": [
+                {
+                  "activity": "IfLandingFileExists",
+                  "dependencyConditions": [
+                    "Failed"
+                  ]
+                }
+              ],
+              "policy": {
+                "timeout": "0.00:10:00",
+                "retry": 2,
+                "retryIntervalInSeconds": 30,
+                "secureOutput": false,
+                "secureInput": false
+              },
+              "typeProperties": {
+                "storedProcedureName": "[audit].[usp_log_error]",
+                "storedProcedureParameters": {
+                  "run_id": {
+                    "value": {
+                      "value": "@pipeline().parameters.run_id",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "entity_run_id": {
+                    "value": {
+                      "value": "@pipeline().parameters.entity_run_id",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "error_stage": {
+                    "value": "LANDING",
+                    "type": "String"
+                  },
+                  "error_code": {
+                    "value": "LANDING_FILE_EXISTS",
+                    "type": "String"
+                  },
+                  "error_message": {
+                    "value": {
+                      "value": "@concat('Landing file already exists, refusing to overwrite: ', concat(pipeline().parameters.landing_folder,'/',pipeline().parameters.source_table,'_',pipeline().parameters.run_timestamp,'.json'))",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "source_system": {
+                    "value": {
+                      "value": "@pipeline().parameters.source_system",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "source_table": {
+                    "value": {
+                      "value": "@pipeline().parameters.source_table",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "is_retryable": {
+                    "value": false,
+                    "type": "Boolean"
+                  }
+                }
+              },
+              "externalReferences": {
+                "connection": "00000000-0000-0000-0000-00000000a003"
+              }
+            },
+            {
+              "name": "AuditLandingFileExistsFailed",
+              "type": "SqlServerStoredProcedure",
+              "dependsOn": [
+                {
+                  "activity": "AuditLandingFileExistsError",
+                  "dependencyConditions": [
+                    "Completed"
+                  ]
+                }
+              ],
+              "policy": {
+                "timeout": "0.00:10:00",
+                "retry": 2,
+                "retryIntervalInSeconds": 30,
+                "secureOutput": false,
+                "secureInput": false
+              },
+              "typeProperties": {
+                "storedProcedureName": "[audit].[usp_update_entity_run]",
+                "storedProcedureParameters": {
+                  "entity_run_id": {
+                    "value": {
+                      "value": "@pipeline().parameters.entity_run_id",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "status": {
+                    "value": "FAILED",
+                    "type": "String"
+                  },
+                  "error_message": {
+                    "value": "Landing file already exists; see audit.error",
+                    "type": "String"
+                  }
+                }
+              },
+              "externalReferences": {
+                "connection": "00000000-0000-0000-0000-00000000a003"
+              }
+            },
+            {
+              "name": "LandingAuditCopyError",
+              "type": "SqlServerStoredProcedure",
+              "dependsOn": [
+                {
+                  "activity": "CopyToLanding",
+                  "dependencyConditions": [
+                    "Failed"
+                  ]
+                }
+              ],
+              "policy": {
+                "timeout": "0.00:10:00",
+                "retry": 2,
+                "retryIntervalInSeconds": 30,
+                "secureOutput": false,
+                "secureInput": false
+              },
+              "typeProperties": {
+                "storedProcedureName": "[audit].[usp_log_error]",
+                "storedProcedureParameters": {
+                  "run_id": {
+                    "value": {
+                      "value": "@pipeline().parameters.run_id",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "entity_run_id": {
+                    "value": {
+                      "value": "@pipeline().parameters.entity_run_id",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "error_stage": {
+                    "value": "EXTRACT",
+                    "type": "String"
+                  },
+                  "error_code": {
+                    "value": {
+                      "value": "@string(activity('CopyToLanding').error.errorCode)",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "error_message": {
+                    "value": {
+                      "value": "@activity('CopyToLanding').error.message",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "source_system": {
+                    "value": {
+                      "value": "@pipeline().parameters.source_system",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "source_table": {
+                    "value": {
+                      "value": "@pipeline().parameters.source_table",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "target_table": {
+                    "value": {
+                      "value": "@concat(pipeline().parameters.target_schema,'.',pipeline().parameters.target_table)",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "is_retryable": {
+                    "value": false,
+                    "type": "Boolean"
+                  }
+                }
+              },
+              "externalReferences": {
+                "connection": "00000000-0000-0000-0000-00000000a003"
+              }
+            },
+            {
+              "name": "LandingAuditEntityFailed",
+              "type": "SqlServerStoredProcedure",
+              "dependsOn": [
+                {
+                  "activity": "LandingAuditCopyError",
+                  "dependencyConditions": [
+                    "Completed"
+                  ]
+                }
+              ],
+              "policy": {
+                "timeout": "0.00:10:00",
+                "retry": 2,
+                "retryIntervalInSeconds": 30,
+                "secureOutput": false,
+                "secureInput": false
+              },
+              "typeProperties": {
+                "storedProcedureName": "[audit].[usp_update_entity_run]",
+                "storedProcedureParameters": {
+                  "entity_run_id": {
+                    "value": {
+                      "value": "@pipeline().parameters.entity_run_id",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "status": {
+                    "value": "FAILED",
+                    "type": "String"
+                  },
+                  "error_message": {
+                    "value": "Extraction failed; see audit.error",
+                    "type": "String"
+                  }
+                }
+              },
+              "externalReferences": {
+                "connection": "00000000-0000-0000-0000-00000000a003"
+              }
+            },
+            {
+              "name": "LandingFailExtraction",
+              "type": "Fail",
+              "dependsOn": [
+                {
+                  "activity": "LandingAuditEntityFailed",
+                  "dependencyConditions": [
+                    "Completed"
+                  ]
+                }
+              ],
+              "typeProperties": {
+                "message": {
+                  "value": "@concat('Extraction failed for ', pipeline().parameters.source_system, '.', pipeline().parameters.source_table)",
+                  "type": "Expression"
+                },
+                "errorCode": "BRONZE_EXTRACT_FAILED"
+              }
+            }
+          ],
+          "ifFalseActivities": [
+            {
+              "name": "CopyToStaging",
+              "type": "Copy",
+              "dependsOn": [],
+              "policy": {
+                "timeout": "0.12:00:00",
+                "retry": 2,
+                "retryIntervalInSeconds": 60,
+                "secureOutput": false,
+                "secureInput": false
+              },
+              "typeProperties": {
+                "source": {
+                  "type": "SqlServerSource",
+                  "sqlReaderQuery": {
+                    "value": "@pipeline().parameters.source_query",
+                    "type": "Expression"
+                  },
+                  "queryTimeout": "02:00:00",
+                  "partitionOption": "None",
+                  "datasetSettings": {
+                    "annotations": [],
+                    "type": "SqlServerTable",
+                    "schema": [],
+                    "typeProperties": {
+                      "database": {
+                        "value": "@pipeline().parameters.source_database",
+                        "type": "Expression"
+                      }
+                    },
+                    "externalReferences": {
+                      "connection": "00000000-0000-0000-0000-00000000a001"
+                    }
+                  },
+                  "additionalColumns": [
+                    {
+                      "name": "_staging_run_id",
+                      "value": {
+                        "value": "@pipeline().parameters.run_id",
+                        "type": "Expression"
+                      }
+                    }
+                  ]
+                },
+                "sink": {
+                  "type": "LakehouseTableSink",
+                  "tableActionOption": "Overwrite",
+                  "partitionOption": "None",
+                  "datasetSettings": {
+                    "annotations": [],
+                    "linkedService": {
+                      "name": "lh_bronze",
+                      "properties": {
+                        "annotations": [],
+                        "type": "Lakehouse",
+                        "typeProperties": {
+                          "workspaceId": "00000000-0000-0000-0000-000000000000",
+                          "artifactId": "00000000-0000-0000-0000-00000000b002",
+                          "rootFolder": "Tables"
+                        }
+                      }
+                    },
+                    "type": "LakehouseTable",
+                    "schema": [],
+                    "typeProperties": {
+                      "schema": {
+                        "value": "@pipeline().parameters.staging_schema",
+                        "type": "Expression"
+                      },
+                      "table": {
+                        "value": "@pipeline().parameters.staging_table",
+                        "type": "Expression"
+                      }
+                    }
+                  }
+                },
+                "enableStaging": false,
+                "translator": {
+                  "type": "TabularTranslator",
+                  "typeConversion": true,
+                  "typeConversionSettings": {
+                    "allowDataTruncation": false,
+                    "treatBooleanAsNumber": false
+                  }
+                }
+              }
+            },
+            {
+              "name": "AuditStagingCopyActivity",
+              "type": "SqlServerStoredProcedure",
+              "dependsOn": [
+                {
+                  "activity": "CopyToStaging",
+                  "dependencyConditions": [
+                    "Succeeded"
+                  ]
+                }
+              ],
+              "policy": {
+                "timeout": "0.00:10:00",
+                "retry": 2,
+                "retryIntervalInSeconds": 30,
+                "secureOutput": false,
+                "secureInput": false
+              },
+              "typeProperties": {
+                "storedProcedureName": "[audit].[usp_log_activity]",
+                "storedProcedureParameters": {
+                  "run_id": {
+                    "value": {
+                      "value": "@pipeline().parameters.run_id",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "entity_run_id": {
+                    "value": {
+                      "value": "@pipeline().parameters.entity_run_id",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "activity_type": {
+                    "value": "COPY_COMPLETED",
+                    "type": "String"
+                  },
+                  "activity_name": {
+                    "value": "CopyToStaging (table action Overwrite = truncate + load)",
+                    "type": "String"
+                  },
+                  "status": {
+                    "value": "SUCCEEDED",
+                    "type": "String"
+                  },
+                  "rows_affected": {
+                    "value": {
+                      "value": "@activity('CopyToStaging').output.rowsCopied",
+                      "type": "Expression"
+                    },
+                    "type": "Int64"
+                  },
+                  "activity_source": {
+                    "value": "PIPELINE",
+                    "type": "String"
+                  }
+                }
+              },
+              "externalReferences": {
+                "connection": "00000000-0000-0000-0000-00000000a003"
+              }
+            },
+            {
+              "name": "AuditStagingExtracted",
+              "type": "SqlServerStoredProcedure",
+              "dependsOn": [
+                {
+                  "activity": "CopyToStaging",
+                  "dependencyConditions": [
+                    "Succeeded"
+                  ]
+                }
+              ],
+              "policy": {
+                "timeout": "0.00:10:00",
+                "retry": 2,
+                "retryIntervalInSeconds": 30,
+                "secureOutput": false,
+                "secureInput": false
+              },
+              "typeProperties": {
+                "storedProcedureName": "[audit].[usp_update_entity_run]",
+                "storedProcedureParameters": {
+                  "entity_run_id": {
+                    "value": {
+                      "value": "@pipeline().parameters.entity_run_id",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "status": {
+                    "value": "EXTRACTED",
+                    "type": "String"
+                  },
+                  "source_row_count": {
+                    "value": {
+                      "value": "@activity('CopyToStaging').output.rowsCopied",
+                      "type": "Expression"
+                    },
+                    "type": "Int64"
+                  }
+                }
+              },
+              "externalReferences": {
+                "connection": "00000000-0000-0000-0000-00000000a003"
+              }
+            },
+            {
+              "name": "StagingAuditCopyError",
+              "type": "SqlServerStoredProcedure",
+              "dependsOn": [
+                {
+                  "activity": "CopyToStaging",
+                  "dependencyConditions": [
+                    "Failed"
+                  ]
+                }
+              ],
+              "policy": {
+                "timeout": "0.00:10:00",
+                "retry": 2,
+                "retryIntervalInSeconds": 30,
+                "secureOutput": false,
+                "secureInput": false
+              },
+              "typeProperties": {
+                "storedProcedureName": "[audit].[usp_log_error]",
+                "storedProcedureParameters": {
+                  "run_id": {
+                    "value": {
+                      "value": "@pipeline().parameters.run_id",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "entity_run_id": {
+                    "value": {
+                      "value": "@pipeline().parameters.entity_run_id",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "error_stage": {
+                    "value": "EXTRACT",
+                    "type": "String"
+                  },
+                  "error_code": {
+                    "value": {
+                      "value": "@string(activity('CopyToStaging').error.errorCode)",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "error_message": {
+                    "value": {
+                      "value": "@activity('CopyToStaging').error.message",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "source_system": {
+                    "value": {
+                      "value": "@pipeline().parameters.source_system",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "source_table": {
+                    "value": {
+                      "value": "@pipeline().parameters.source_table",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "target_table": {
+                    "value": {
+                      "value": "@concat(pipeline().parameters.target_schema,'.',pipeline().parameters.target_table)",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "is_retryable": {
+                    "value": false,
+                    "type": "Boolean"
+                  }
+                }
+              },
+              "externalReferences": {
+                "connection": "00000000-0000-0000-0000-00000000a003"
+              }
+            },
+            {
+              "name": "StagingAuditEntityFailed",
+              "type": "SqlServerStoredProcedure",
+              "dependsOn": [
+                {
+                  "activity": "StagingAuditCopyError",
+                  "dependencyConditions": [
+                    "Completed"
+                  ]
+                }
+              ],
+              "policy": {
+                "timeout": "0.00:10:00",
+                "retry": 2,
+                "retryIntervalInSeconds": 30,
+                "secureOutput": false,
+                "secureInput": false
+              },
+              "typeProperties": {
+                "storedProcedureName": "[audit].[usp_update_entity_run]",
+                "storedProcedureParameters": {
+                  "entity_run_id": {
+                    "value": {
+                      "value": "@pipeline().parameters.entity_run_id",
+                      "type": "Expression"
+                    },
+                    "type": "String"
+                  },
+                  "status": {
+                    "value": "FAILED",
+                    "type": "String"
+                  },
+                  "error_message": {
+                    "value": "Extraction failed; see audit.error",
+                    "type": "String"
+                  }
+                }
+              },
+              "externalReferences": {
+                "connection": "00000000-0000-0000-0000-00000000a003"
+              }
+            },
+            {
+              "name": "StagingFailExtraction",
+              "type": "Fail",
+              "dependsOn": [
+                {
+                  "activity": "StagingAuditEntityFailed",
+                  "dependencyConditions": [
+                    "Completed"
+                  ]
+                }
+              ],
+              "typeProperties": {
+                "message": {
+                  "value": "@concat('Extraction failed for ', pipeline().parameters.source_system, '.', pipeline().parameters.source_table)",
+                  "type": "Expression"
+                },
+                "errorCode": "BRONZE_EXTRACT_FAILED"
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "parameters": {
+      "run_id": {
+        "type": "string",
+        "defaultValue": ""
+      },
+      "entity_run_id": {
+        "type": "string",
+        "defaultValue": ""
+      },
+      "run_timestamp": {
+        "type": "string",
+        "defaultValue": ""
+      },
+      "environment": {
+        "type": "string",
+        "defaultValue": "DEV"
+      },
+      "entity_id": {
+        "type": "int",
+        "defaultValue": 0
+      },
+      "source_system": {
+        "type": "string",
+        "defaultValue": ""
+      },
+      "source_schema": {
+        "type": "string",
+        "defaultValue": ""
+      },
+      "source_table": {
+        "type": "string",
+        "defaultValue": ""
+      },
+      "target_schema": {
+        "type": "string",
+        "defaultValue": ""
+      },
+      "target_table": {
+        "type": "string",
+        "defaultValue": ""
+      },
+      "load_type": {
+        "type": "string",
+        "defaultValue": ""
+      },
+      "landing_enabled": {
+        "type": "bool",
+        "defaultValue": false
+      },
+      "landing_container": {
+        "type": "string",
+        "defaultValue": "landing"
+      },
+      "landing_folder": {
+        "type": "string",
+        "defaultValue": ""
+      },
+      "source_database": {
+        "type": "string",
+        "defaultValue": ""
+      },
+      "source_query": {
+        "type": "string",
+        "defaultValue": ""
+      },
+      "staging_schema": {
+        "type": "string",
+        "defaultValue": "staging"
+      },
+      "staging_table": {
+        "type": "string",
+        "defaultValue": ""
+      },
+      "watermark_before": {
+        "type": "string",
+        "defaultValue": ""
+      },
+      "parent_pipeline_run_id": {
+        "type": "string",
+        "defaultValue": ""
+      }
+    }
+  }
+}

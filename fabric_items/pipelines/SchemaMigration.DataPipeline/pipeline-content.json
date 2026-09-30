@@ -1,31 +1,60 @@
 {
-  "_comment": "DRAFT content -- see fabric_items/README.md. One Notebook activity invoking SchemaMigrationRunner.Notebook. The connectionString parameter's value is swapped per stage via a Fabric Deployment Pipeline deployment rule (Dev/UAT/Prod each point at their own Warehouse SQL endpoint) -- never hardcode a real connection string here.",
   "properties": {
-    "parameters": {
-      "TargetEnvironment": {
-        "type": "string",
-        "defaultValue": "dev"
-      }
-    },
+    "description": "Applies pending schema migrations: audit SQL Database first (audit schema, procs, views), then the Warehouse (control schema, RLS, fn_active_entities, control metadata). Connection strings are pipeline parameters bound per stage via deployment rules / Variable Library -- never hard-coded.",
     "activities": [
       {
         "name": "RunSchemaMigration",
         "type": "TridentNotebook",
+        "dependsOn": [],
+        "policy": {
+          "timeout": "0.02:00:00",
+          "retry": 0,
+          "retryIntervalInSeconds": 30,
+          "secureOutput": false,
+          "secureInput": false
+        },
         "typeProperties": {
-          "notebookId": "<SchemaMigrationRunner.Notebook item id, resolved at deploy time>",
-          "workspaceId": "<current workspace id>",
+          "notebookId": "dbd9b8e2-a6e9-4f75-8ae0-5ba759b5d7a8",
+          "workspaceId": "00000000-0000-0000-0000-000000000000",
           "parameters": {
             "target_environment": {
-              "value": "@pipeline().parameters.TargetEnvironment",
+              "value": {
+                "value": "@pipeline().parameters.TargetEnvironment",
+                "type": "Expression"
+              },
               "type": "string"
             },
-            "connection_string": {
-              "value": "<Warehouse SQL endpoint connection string, resolved per stage via a deployment rule>",
+            "warehouse_connection_string": {
+              "value": {
+                "value": "@pipeline().parameters.warehouse_connection_string",
+                "type": "Expression"
+              },
+              "type": "string"
+            },
+            "audit_connection_string": {
+              "value": {
+                "value": "@pipeline().parameters.audit_connection_string",
+                "type": "Expression"
+              },
               "type": "string"
             }
           }
         }
       }
-    ]
+    ],
+    "parameters": {
+      "TargetEnvironment": {
+        "type": "string",
+        "defaultValue": "DEV"
+      },
+      "warehouse_connection_string": {
+        "type": "string",
+        "defaultValue": ""
+      },
+      "audit_connection_string": {
+        "type": "string",
+        "defaultValue": ""
+      }
+    }
   }
 }
