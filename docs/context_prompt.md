@@ -99,6 +99,15 @@ else APPEND.
 - **No hard-coded endpoints/ids:** connection strings and the Key Vault URI
   are parameters. Fabric item connection/artifact ids are placeholders
   (`fabric_items/README.md`).
+- **Parameterised source connection:** the SQL Server extract Copy binds to
+  `@pipeline().parameters.source_connection_id`, a Fabric connection GUID
+  taken from `control.source_connection.fabric_connection_id` via
+  `fn_active_entities`. An empty value fails fast with
+  `SOURCE_CONNECTION_NOT_CONFIGURED`. A new SQL Server instance needs only a
+  connection plus metadata. Support over the on-premises gateway is unverified
+  live; the fallback is one statically bound pipeline per server.
+- **`control.watermark` and `control.source_connection` are insert-only in
+  seeds.** Operators set per-environment connection values (RB-02).
 - **Token audience** defaults to `"pbi"` (proven in the Dev reference
   notebook). It is configurable via `sql_token_audience` /
   `audit_sql_token_audience`.
@@ -109,7 +118,34 @@ else APPEND.
 
 ## Validation status
 
-`pytest -q` passes with mocks. Spark end-to-end tests skip without Java.
-**Nothing has been deployed or run against a live Fabric workspace**, and
-the CI/CD path is unvalidated end to end. See
+`pytest -q` passes with mocks (293 passed, 1 skipped as of 2026-09-30). The
+Spark end-to-end tests (`tests/bronze/test_spark_end_to_end.py`) skip without
+Java and have **never been run**. **Nothing has been deployed or run against
+a live Fabric workspace**, and the CI/CD path is unvalidated end to end. See
 `docs/bronze_framework/01_Architecture.md` § Verify live before production.
+
+## Where the work stands (update this section when it changes)
+
+- Branch `feature/bronze-framework`, not pushed and not merged. `main` holds
+  only the baseline commit.
+- **Pushing to or merging into `main` triggers `.github/workflows/cicd-pipeline.yml`.**
+  That starts a DEV deploy, then UAT and PROD, which are gated on reviewers.
+  Do not do it before the SPN and GitHub variables exist.
+
+## Next steps (in order)
+
+1. Run the Spark tests on a machine with Java 17:
+   `pip install "pyspark==3.5.*" "delta-spark==3.2.*" && pytest -m spark -v`.
+   Fix whatever fails.
+2. DEV platform setup, following `docs/runbooks/01_platform_setup.md`. This
+   needs the Dev workspace, connection and SPN details from the user. Confirm
+   with the user before every deployment action, and never touch PROD
+   without explicit, in-the-moment approval.
+3. Work through the "Verify live" list in `01_Architecture.md`, including
+   the parameterised connection over the gateway. Export one real Copy,
+   Lookup and SP activity from the portal and reconcile the hand-authored
+   JSON shapes.
+4. Run the final acceptance test in
+   `docs/agent_prompts/21_deployment_final_acceptance.md`, and record the
+   results in `docs/bronze_framework/test_results.md`.
+5. Then open a PR from `feature/bronze-framework` to `main`.
